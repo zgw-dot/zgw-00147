@@ -88,7 +88,7 @@ def init(ctx):
 @click.option("--evidence-dir", "-e", "evidence_dir", required=True,
               type=click.Path(exists=True, file_okay=False), help="证据目录路径")
 @click.option("--description", "-d", default="", help="批次描述")
-@click.option("--force", "-f", is_flag=True, help="强制重新导入（删除旧批次）")
+@click.option("--force", "-f", is_flag=True, help="强制重新导入（替换旧批次）")
 @click.pass_context
 def import_cmd(ctx, batch_no, manifest_path, evidence_dir, description, force):
     """导入 manifest 清单"""
@@ -96,15 +96,6 @@ def import_cmd(ctx, batch_no, manifest_path, evidence_dir, description, force):
 
     manifest_path = os.path.abspath(manifest_path)
     evidence_dir = os.path.abspath(evidence_dir)
-
-    if db.batch_exists(db_path, batch_no):
-        if not force:
-            click.echo(f"错误: 批次 '{batch_no}' 已存在，使用 --force 强制重新导入", err=True)
-            sys.exit(1)
-        old_batch = db.get_batch_by_no(db_path, batch_no)
-        with db.get_conn(db_path) as conn:
-            conn.execute("DELETE FROM batches WHERE id = ?", (old_batch["id"],))
-        click.echo(f"已删除旧批次 '{batch_no}'")
 
     click.echo(f"正在解析清单: {manifest_path}")
 
@@ -132,18 +123,35 @@ def import_cmd(ctx, batch_no, manifest_path, evidence_dir, description, force):
         for line_no, path in result.duplicates:
             click.echo(f"  第{line_no}行: {path}")
 
-    batch_id = db.create_batch(
+    batch_exists = db.batch_exists(db_path, batch_no)
+    if batch_exists and not force:
+        click.echo("")
+        click.echo(f"错误: 批次 '{batch_no}' 已存在，使用 --force 强制重新导入", err=True)
+        sys.exit(1)
+
+    if batch_exists and force:
+        old_batch = db.get_batch_by_no(db_path, batch_no)
+        old_total, old_signed, old_supplement, old_pending = db.count_reviewed(
+            db_path, old_batch["id"]
+        )
+        click.echo("")
+        click.echo(f"将替换批次 '{batch_no}' (原有 {old_total} 项，"
+                   f"已签收 {old_signed}，待补件 {old_supplement})")
+
+    batch_id, count = db.replace_batch(
         db_path,
         batch_no=batch_no,
         manifest_path=manifest_path,
         evidence_dir=evidence_dir,
+        items=result.items,
         description=description,
     )
 
-    count = db.insert_evidence_items(db_path, batch_id, result.items)
-
     click.echo("")
-    click.echo(f"导入完成: 批次 '{batch_no}'")
+    if batch_exists:
+        click.echo(f"已替换批次 '{batch_no}'")
+    else:
+        click.echo(f"导入完成: 批次 '{batch_no}'")
     click.echo(f"  成功导入: {count} 条")
     if result.errors:
         click.echo(f"  问题条目: {len(result.errors)} 条（已跳过）")

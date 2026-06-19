@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "REV-FAIL",
+    "description": "",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer\\manifest_force_bad_mixed.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+    "created_at": 1781888901.4780793,
+    "updated_at": 1781888901.4780793
+  },
+  "statistics": {
+    "precheck": {
+      "total": 1,
+      "passed": 0,
+      "failed": 0,
+      "unchecked": 1
+    },
+    "review": {
+      "total": 1,
+      "signed": 0,
+      "supplement": 0,
+      "pending": 1
+    }
+  },
+  "items": [
+    {
+      "id": 13,
+      "file_path": "docs/evidence_a.txt",
+      "manifest_line_no": 2,
+      "expected_size": 48,
+      "actual_size": null,
+      "expected_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ]
+}

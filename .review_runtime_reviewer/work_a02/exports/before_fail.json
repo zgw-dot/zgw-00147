@@ -1,19 +1,19 @@
 {
   "version": "1.0",
   "batch": {
-    "batch_no": "BATCH-001",
-    "description": "测试批次",
+    "batch_no": "REV-FAIL",
+    "description": "初始批次用于强制覆盖失败保护验证",
     "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence\\manifest.csv",
     "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
-    "created_at": 1781886850.6590817,
-    "updated_at": 1781886852.1747167
+    "created_at": 1781888849.0557606,
+    "updated_at": 1781888883.2363434
   },
   "statistics": {
     "precheck": {
       "total": 5,
-      "passed": 4,
-      "failed": 1,
-      "unchecked": 0
+      "passed": 0,
+      "failed": 0,
+      "unchecked": 5
     },
     "review": {
       "total": 5,
@@ -24,69 +24,69 @@
   },
   "items": [
     {
-      "id": 1,
+      "id": 8,
       "file_path": "docs/evidence_a.txt",
       "manifest_line_no": 2,
       "expected_size": 48,
-      "actual_size": 48,
+      "actual_size": null,
       "expected_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
-      "actual_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
-      "precheck_status": "passed",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
       "review_status": "signed",
-      "review_remark": "核验通过",
-      "reviewed_at": 1781886851.3449612
+      "review_remark": "撤销后应保留的签收备注",
+      "reviewed_at": 1781888883.2363434
     },
     {
-      "id": 2,
+      "id": 9,
       "file_path": "docs/evidence_b.txt",
       "manifest_line_no": 3,
       "expected_size": 54,
-      "actual_size": 54,
+      "actual_size": null,
       "expected_sha256": "c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a",
-      "actual_sha256": "c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a",
-      "precheck_status": "passed",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
       "review_status": "pending",
       "review_remark": null,
       "reviewed_at": null
     },
     {
-      "id": 3,
+      "id": 10,
       "file_path": "images/screenshot.png",
       "manifest_line_no": 4,
       "expected_size": 38,
-      "actual_size": 38,
+      "actual_size": null,
       "expected_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
-      "actual_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
-      "precheck_status": "passed",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
       "review_status": "pending",
       "review_remark": null,
       "reviewed_at": null
     },
     {
-      "id": 4,
+      "id": 11,
       "file_path": "transaction.csv",
       "manifest_line_no": 5,
       "expected_size": 23,
-      "actual_size": 23,
+      "actual_size": null,
       "expected_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
-      "actual_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
-      "precheck_status": "passed",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
       "review_status": "pending",
       "review_remark": null,
       "reviewed_at": null
     },
     {
-      "id": 5,
+      "id": 12,
       "file_path": "docs/missing_report.pdf",
       "manifest_line_no": 6,
       "expected_size": 2048,
-      "actual_size": 0,
+      "actual_size": null,
       "expected_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "actual_sha256": null,
-      "precheck_status": "failed",
+      "precheck_status": "unchecked",
       "review_status": "pending",
       "review_remark": null,
-      "reviewed_at": 1781886852.1747167
+      "reviewed_at": null
     }
   ]
 }

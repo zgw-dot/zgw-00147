@@ -1,0 +1,6 @@
+file_path,size,sha256
+bad_file_1.txt,100,notavalidhashthisisnot64charslong
+bad_file_2.txt,200,also_bad_hash
+bad_file_3.txt,300,short
+bad_file_4.txt,400,gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg
+,500,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

@@ -174,6 +174,58 @@ def insert_evidence_items(
         return count
 
 
+def replace_batch(
+    db_path: str,
+    batch_no: str,
+    manifest_path: str,
+    evidence_dir: str,
+    items: List[Dict],
+    description: Optional[str] = None,
+) -> Tuple[int, int]:
+    """
+    原子替换批次：在同一事务中删除旧批次并创建新批次。
+
+    如果旧批次不存在，则直接创建新批次。
+    返回 (新批次ID, 证据项数量)。
+    事务内任何异常都会回滚，旧数据保持不变。
+    """
+    now = time.time()
+    with get_conn(db_path) as conn:
+        old = conn.execute(
+            "SELECT id FROM batches WHERE batch_no = ?",
+            (batch_no,),
+        ).fetchone()
+        if old:
+            conn.execute("DELETE FROM batches WHERE id = ?", (old["id"],))
+
+        cursor = conn.execute(
+            """INSERT INTO batches
+               (batch_no, manifest_path, evidence_dir, description, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (batch_no, manifest_path, evidence_dir, description, now, now),
+        )
+        new_batch_id = cursor.lastrowid
+
+        count = 0
+        for item in items:
+            conn.execute(
+                """INSERT INTO evidence_items
+                   (batch_id, file_path, expected_size, expected_sha256,
+                    manifest_line_no, precheck_status, review_status)
+                   VALUES (?, ?, ?, ?, ?, 'unchecked', 'pending')""",
+                (
+                    new_batch_id,
+                    item["file_path"],
+                    item.get("expected_size"),
+                    item.get("expected_sha256"),
+                    item["manifest_line_no"],
+                ),
+            )
+            count += 1
+
+        return new_batch_id, count
+
+
 def get_evidence_items(db_path: str, batch_id: int) -> List[Dict]:
     """获取批次的所有证据项"""
     with get_conn(db_path) as conn:
