@@ -689,7 +689,7 @@ class TestSnapshotCLIChain(unittest.TestCase):
         self.assertIn("批次恢复链路: batch_trace_05", result.stdout)
         self.assertIn("恢复链路：共 1 次恢复", result.stdout)
         self.assertIn("来源快照:", result.stdout)
-        self.assertIn("✓", result.stdout)
+        self.assertIn("[OK]", result.stdout)
         self.assertIn("操作人: restore_operator", result.stdout)
         self.assertIn("父事件: 无（链路起点）", result.stdout)
         self.assertIn("路径映射:", result.stdout)
@@ -786,7 +786,7 @@ class TestSnapshotCLIChain(unittest.TestCase):
         print("\n[步骤6] 删除来源快照 v1，trace 显示丢失告警")
         os.remove(snap_v1)
         result = run_cli(["trace", "-b", "batch_force_chain"], cwd=work_dir)
-        self.assertIn("✗(已丢失)", result.stdout)
+        self.assertIn("[MISSING](已丢失)", result.stdout)
         self.assertIn("[!]", result.stdout)
         self.assertIn("快照源文件已不存在", result.stdout)
 
@@ -840,7 +840,7 @@ class TestSnapshotCLIChain(unittest.TestCase):
         print("\n[步骤4] trace 显示目录重映射")
         result = run_cli(["trace", "-b", "batch_remap"], cwd=dst)
         self.assertIn("[目录重映射]", result.stdout)
-        self.assertIn("↓ (重映射)", result.stdout)
+        self.assertIn("v (重映射)", result.stdout)
         self.assertIn(fixture["evidence_dir"], result.stdout)
         self.assertIn(mapped, result.stdout)
 

@@ -1,0 +1,241 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "reviewer_batch",
+    "description": "reviewer source batch v2",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\evidence",
+    "created_at": 1781901717.511701,
+    "updated_at": 1781901734.6852822,
+    "restore": {
+      "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\reviewer_snapshot_v2.json",
+      "restored_at": 1781901882.7133462,
+      "diff": {
+        "old_batch": {
+          "description": "reviewer source batch v1",
+          "created_at": 1781901717.4727948,
+          "updated_at": 1781901846.4273496,
+          "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+          "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\mapped_evidence"
+        },
+        "new_batch": {
+          "description": "reviewer source batch v2",
+          "created_at": 1781901717.511701,
+          "updated_at": 1781901734.6852822,
+          "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\manifest.csv",
+          "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\evidence"
+        },
+        "review_stats": {
+          "old": {
+            "total": 3,
+            "signed": 1,
+            "supplement": 1,
+            "pending": 1
+          },
+          "new": {
+            "total": 3,
+            "signed": 0,
+            "supplement": 1,
+            "pending": 2
+          }
+        },
+        "precheck_stats": {
+          "old": {
+            "total": 3,
+            "passed": 3,
+            "failed": 0,
+            "unchecked": 0
+          },
+          "new": {
+            "total": 3,
+            "passed": 0,
+            "failed": 0,
+            "unchecked": 3
+          }
+        },
+        "items": {
+          "only_in_old": [],
+          "only_in_new": [],
+          "in_both": [
+            "docs/a.txt",
+            "docs/b.txt",
+            "images/c.bin"
+          ]
+        }
+      }
+    }
+  },
+  "statistics": {
+    "precheck": {
+      "total": 3,
+      "passed": 0,
+      "failed": 0,
+      "unchecked": 3
+    },
+    "review": {
+      "total": 3,
+      "signed": 0,
+      "supplement": 1,
+      "pending": 2
+    }
+  },
+  "items": [
+    {
+      "id": 4,
+      "file_path": "docs/a.txt",
+      "manifest_line_no": 2,
+      "expected_size": 28,
+      "actual_size": null,
+      "expected_sha256": "9bd0881c524c9b0b0f8f8543384efde735493123a5b149b5c5b5585a4806f4a0",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "supplement",
+      "review_remark": "v2 supplement one",
+      "reviewed_at": 1781901734.6852822
+    },
+    {
+      "id": 5,
+      "file_path": "docs/b.txt",
+      "manifest_line_no": 3,
+      "expected_size": 27,
+      "actual_size": null,
+      "expected_sha256": "af18fb56c9784720c48672f3698854e22c3ce47d60c05e71234f1db19d34f2a5",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    },
+    {
+      "id": 6,
+      "file_path": "images/c.bin",
+      "manifest_line_no": 4,
+      "expected_size": 21,
+      "actual_size": null,
+      "expected_sha256": "dd9082da1f60ab1f1684739cb62574f00cfbb6823866777f22fb242860ca8ce3",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "restore_trace": {
+    "event_count": 2,
+    "modified_after_restore": false,
+    "warnings": [],
+    "events": [
+      {
+        "event_id": 1,
+        "restored_at": 1781901779.497133,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\reviewer_snapshot_v1.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781901749.7324133,
+        "parent_event_id": null,
+        "was_force": false,
+        "was_remapped": true,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\mapped_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+        "old_batch_snapshot": null,
+        "restore_diff": null,
+        "operator": "restore_user",
+        "chain_ok": true,
+        "warnings": []
+      },
+      {
+        "event_id": 2,
+        "restored_at": 1781901882.7133462,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\reviewer_snapshot_v2.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781901749.8183248,
+        "parent_event_id": 1,
+        "was_force": true,
+        "was_remapped": false,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\manifest.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\manifest.csv",
+        "old_batch_snapshot": {
+          "batch": {
+            "id": 1,
+            "batch_no": "reviewer_batch",
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\mapped_evidence",
+            "description": "reviewer source batch v1",
+            "created_at": 1781901717.4727948,
+            "updated_at": 1781901846.4273496,
+            "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\reviewer_snapshot_v1.json",
+            "restored_at": 1781901779.497133,
+            "last_restore_event_id": 1
+          },
+          "review_stats": {
+            "total": 3,
+            "signed": 1,
+            "supplement": 1,
+            "pending": 1
+          },
+          "item_count": 3,
+          "review_log_count": 4
+        },
+        "restore_diff": {
+          "old_batch": {
+            "description": "reviewer source batch v1",
+            "created_at": 1781901717.4727948,
+            "updated_at": 1781901846.4273496,
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\mapped_evidence"
+          },
+          "new_batch": {
+            "description": "reviewer source batch v2",
+            "created_at": 1781901717.511701,
+            "updated_at": 1781901734.6852822,
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\manifest.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\evidence"
+          },
+          "review_stats": {
+            "old": {
+              "total": 3,
+              "signed": 1,
+              "supplement": 1,
+              "pending": 1
+            },
+            "new": {
+              "total": 3,
+              "signed": 0,
+              "supplement": 1,
+              "pending": 2
+            }
+          },
+          "precheck_stats": {
+            "old": {
+              "total": 3,
+              "passed": 3,
+              "failed": 0,
+              "unchecked": 0
+            },
+            "new": {
+              "total": 3,
+              "passed": 0,
+              "failed": 0,
+              "unchecked": 3
+            }
+          },
+          "items": {
+            "only_in_old": [],
+            "only_in_new": [],
+            "in_both": [
+              "docs/a.txt",
+              "docs/b.txt",
+              "images/c.bin"
+            ]
+          }
+        },
+        "operator": "force_user",
+        "chain_ok": true,
+        "warnings": []
+      }
+    ]
+  }
+}

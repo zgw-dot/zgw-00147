@@ -1,0 +1,111 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "reviewer_batch",
+    "description": "reviewer source batch v1",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\mapped_evidence",
+    "created_at": 1781901717.4727948,
+    "updated_at": 1781901801.3384395,
+    "restore": {
+      "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\reviewer_snapshot_v1.json",
+      "restored_at": 1781901779.497133
+    }
+  },
+  "statistics": {
+    "precheck": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review": {
+      "total": 3,
+      "signed": 2,
+      "supplement": 1,
+      "pending": 0
+    }
+  },
+  "items": [
+    {
+      "id": 1,
+      "file_path": "docs/a.txt",
+      "manifest_line_no": 2,
+      "expected_size": 25,
+      "actual_size": 25,
+      "expected_sha256": "c52588e2673171262b4a71977d435bea5e705576daf9665fd01543631d307c49",
+      "actual_sha256": "c52588e2673171262b4a71977d435bea5e705576daf9665fd01543631d307c49",
+      "precheck_status": "passed",
+      "review_status": "signed",
+      "review_remark": "reviewer signed one",
+      "reviewed_at": 1781901734.6710026
+    },
+    {
+      "id": 2,
+      "file_path": "docs/b.txt",
+      "manifest_line_no": 3,
+      "expected_size": 24,
+      "actual_size": 24,
+      "expected_sha256": "2b158a6c7a3535b504d725c93b17a0262771e26ac431413bcc53c09b43c528ab",
+      "actual_sha256": "2b158a6c7a3535b504d725c93b17a0262771e26ac431413bcc53c09b43c528ab",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "reviewer supplement two",
+      "reviewed_at": 1781901740.4973302
+    },
+    {
+      "id": 3,
+      "file_path": "images/c.bin",
+      "manifest_line_no": 4,
+      "expected_size": 21,
+      "actual_size": 21,
+      "expected_sha256": "69bfa91448cfa14e96c59cd9146cfe4b08dfa36a05a4cc46586c91e883857cb9",
+      "actual_sha256": "69bfa91448cfa14e96c59cd9146cfe4b08dfa36a05a4cc46586c91e883857cb9",
+      "precheck_status": "passed",
+      "review_status": "signed",
+      "review_remark": "post restore sign",
+      "reviewed_at": 1781901801.3384395
+    }
+  ],
+  "restore_trace": {
+    "event_count": 1,
+    "modified_after_restore": true,
+    "warnings": [
+      "该批次在最近一次恢复后有 1 条新的复核/撤销操作"
+    ],
+    "events": [
+      {
+        "event_id": 1,
+        "restored_at": 1781901779.497133,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\reviewer_snapshot_v1.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781901749.7324133,
+        "parent_event_id": null,
+        "was_force": false,
+        "was_remapped": true,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\mapped_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+        "old_batch_snapshot": null,
+        "restore_diff": null,
+        "operator": "restore_user",
+        "chain_ok": true,
+        "warnings": []
+      }
+    ],
+    "post_restore_activity": [
+      {
+        "id": 3,
+        "action": "review",
+        "item_id": 3,
+        "file_path": "images/c.bin",
+        "prev_status": "pending",
+        "new_status": "signed",
+        "new_remark": "post restore sign",
+        "operator": "post_user",
+        "created_at": 1781901801.3384395
+      }
+    ]
+  }
+}

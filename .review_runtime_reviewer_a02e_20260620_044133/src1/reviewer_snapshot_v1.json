@@ -1,0 +1,88 @@
+{
+  "version": "1.0",
+  "snapshot_created_at": 1781901749.7324133,
+  "batch": {
+    "batch_no": "reviewer_batch",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src1\\evidence",
+    "description": "reviewer source batch v1",
+    "created_at": 1781901717.4727948,
+    "updated_at": 1781901740.4973302
+  },
+  "items": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "file_path": "docs/a.txt",
+      "expected_size": 25,
+      "expected_sha256": "c52588e2673171262b4a71977d435bea5e705576daf9665fd01543631d307c49",
+      "manifest_line_no": 2,
+      "actual_size": 25,
+      "actual_sha256": "c52588e2673171262b4a71977d435bea5e705576daf9665fd01543631d307c49",
+      "precheck_status": "passed",
+      "review_status": "signed",
+      "review_remark": "reviewer signed one",
+      "reviewed_at": 1781901734.6710026
+    },
+    {
+      "id": 2,
+      "batch_id": 1,
+      "file_path": "docs/b.txt",
+      "expected_size": 24,
+      "expected_sha256": "2b158a6c7a3535b504d725c93b17a0262771e26ac431413bcc53c09b43c528ab",
+      "manifest_line_no": 3,
+      "actual_size": 24,
+      "actual_sha256": "2b158a6c7a3535b504d725c93b17a0262771e26ac431413bcc53c09b43c528ab",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "reviewer supplement two",
+      "reviewed_at": 1781901740.4973302
+    },
+    {
+      "id": 3,
+      "batch_id": 1,
+      "file_path": "images/c.bin",
+      "expected_size": 21,
+      "expected_sha256": "69bfa91448cfa14e96c59cd9146cfe4b08dfa36a05a4cc46586c91e883857cb9",
+      "manifest_line_no": 4,
+      "actual_size": 21,
+      "actual_sha256": "69bfa91448cfa14e96c59cd9146cfe4b08dfa36a05a4cc46586c91e883857cb9",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "review_logs": [
+    {
+      "id": 2,
+      "batch_id": 1,
+      "item_id": 2,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "supplement",
+      "new_remark": "reviewer supplement two",
+      "action": "review",
+      "operator": "reviewer",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781901740.4973302,
+      "file_path": "docs/b.txt"
+    },
+    {
+      "id": 1,
+      "batch_id": 1,
+      "item_id": 1,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "signed",
+      "new_remark": "reviewer signed one",
+      "action": "review",
+      "operator": "reviewer",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781901734.6710026,
+      "file_path": "docs/a.txt"
+    }
+  ]
+}

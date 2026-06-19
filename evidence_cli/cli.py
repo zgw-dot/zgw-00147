@@ -60,6 +60,15 @@ def main(ctx, work_dir):
     用于证据包的清单导入、完整性预检、复核签收、撤销和报告导出。
     状态保存在本地 SQLite 数据库中，换进程后数据稳定。
     """
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8:replace")
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
+
     if work_dir is None:
         work_dir = os.getcwd()
     work_dir = os.path.abspath(work_dir)
@@ -553,7 +562,7 @@ def _format_trace_output(trace_data: Dict) -> None:
         click.echo(f"[#{idx}] 恢复事件 #{ev['event_id']}{tag}")
         click.echo(f"    恢复时间: {format_time(ev['restored_at'])}")
 
-        snap_marker = "✓" if ev["snapshot_exists"] else "✗(已丢失)"
+        snap_marker = "[OK]" if ev["snapshot_exists"] else "[MISSING](已丢失)"
         click.echo(f"    来源快照: {snap_marker} {ev['snapshot_path']}")
         if ev.get("snapshot_created_at"):
             click.echo(f"    快照创建: {format_time(ev['snapshot_created_at'])}")
@@ -564,7 +573,7 @@ def _format_trace_output(trace_data: Dict) -> None:
             if ev["chain_ok"]:
                 click.echo(f"    父事件: #{ev['parent_event_id']}（链路连续）")
             else:
-                click.echo(f"    父事件: #{ev['parent_event_id']} ✗(链路断档)")
+                click.echo(f"    父事件: #{ev['parent_event_id']} [BROKEN](链路断档)")
         else:
             click.echo("    父事件: 无（链路起点）")
 
@@ -572,7 +581,7 @@ def _format_trace_output(trace_data: Dict) -> None:
         click.echo("    路径映射:")
         if ev["was_remapped"]:
             click.echo(f"      证据目录: {ev.get('evidence_dir_before', '(未知)')}")
-            click.echo(f"                ↓ (重映射)")
+            click.echo(f"                v (重映射)")
             click.echo(f"                {ev['evidence_dir_after']}")
         else:
             if ev.get("evidence_dir_before") and ev["evidence_dir_before"] != ev["evidence_dir_after"]:

@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "snapshot_created_at": 1781901749.8183248,
+  "batch": {
+    "batch_no": "reviewer_batch",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a02e_20260620_044133\\src2\\evidence",
+    "description": "reviewer source batch v2",
+    "created_at": 1781901717.511701,
+    "updated_at": 1781901734.6852822
+  },
+  "items": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "file_path": "docs/a.txt",
+      "expected_size": 28,
+      "expected_sha256": "9bd0881c524c9b0b0f8f8543384efde735493123a5b149b5c5b5585a4806f4a0",
+      "manifest_line_no": 2,
+      "actual_size": null,
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "supplement",
+      "review_remark": "v2 supplement one",
+      "reviewed_at": 1781901734.6852822
+    },
+    {
+      "id": 2,
+      "batch_id": 1,
+      "file_path": "docs/b.txt",
+      "expected_size": 27,
+      "expected_sha256": "af18fb56c9784720c48672f3698854e22c3ce47d60c05e71234f1db19d34f2a5",
+      "manifest_line_no": 3,
+      "actual_size": null,
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    },
+    {
+      "id": 3,
+      "batch_id": 1,
+      "file_path": "images/c.bin",
+      "expected_size": 21,
+      "expected_sha256": "dd9082da1f60ab1f1684739cb62574f00cfbb6823866777f22fb242860ca8ce3",
+      "manifest_line_no": 4,
+      "actual_size": null,
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "review_logs": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "item_id": 1,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "supplement",
+      "new_remark": "v2 supplement one",
+      "action": "review",
+      "operator": "reviewer_v2",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781901734.6852822,
+      "file_path": "docs/a.txt"
+    }
+  ]
+}
