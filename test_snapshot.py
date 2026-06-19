@@ -300,7 +300,7 @@ class TestSnapshot(unittest.TestCase):
         db.init_db(new_db_path)
 
         new_evidence_dir = os.path.join(self.work_dir, "mapped_evidence")
-        os.makedirs(new_evidence_dir, exist_ok=True)
+        shutil.copytree(self.evidence_dir, new_evidence_dir)
 
         restored_batch, _ = snapshot_mod.restore_snapshot(
             new_db_path,
@@ -644,6 +644,114 @@ class TestSnapshot(unittest.TestCase):
             export_data = json.load(f)
         self.assertEqual(export_data["batch"]["batch_no"], "iso_normal")
         self.assertEqual(len(export_data["items"]), count)
+
+    def test_restore_single_evidence_file_missing(self):
+        """复现：单个引用证据文件缺失 → 恢复失败且不落脏数据"""
+        batch_id, _, _, evidence_dir, _ = self._import_batch_isolated("iso_file_miss")
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "snap_file_miss.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_file_miss", snapshot_path)
+
+        items = db.get_evidence_items(self.db_path, batch_id)
+        target_rel = items[0]["file_path"]
+        target_line = items[0]["manifest_line_no"]
+        target_full = os.path.join(evidence_dir, target_rel)
+        self.assertTrue(os.path.isfile(target_full))
+        os.remove(target_full)
+        self.assertFalse(os.path.isfile(target_full))
+
+        new_work_dir = os.path.join(self.work_dir, "file_miss_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError) as ctx:
+            snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+
+        msg = str(ctx.exception)
+        self.assertIn("证据文件缺失", msg)
+        self.assertIn(target_rel, msg)
+        self.assertIn(str(target_line), msg)
+
+        batches_after = db.list_batches(new_db_path)
+        self.assertEqual(len(batches_after), 0)
+
+    def test_restore_remapped_evidence_dir_missing_file(self):
+        """重映射证据目录时也要校验每个引用文件是否齐全"""
+        batch_id, _, _, orig_evidence, _ = self._import_batch_isolated("iso_remap_miss")
+        snapshot_path = os.path.join(self.work_dir, "snap_remap_miss.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_remap_miss", snapshot_path)
+
+        items = db.get_evidence_items(self.db_path, batch_id)
+        target_rel = items[1]["file_path"]
+        target_line = items[1]["manifest_line_no"]
+
+        remap_fixture = os.path.join(self.work_dir, "remap_fixture2")
+        _, remapped_dir, _ = self._create_isolated_fixture(remap_fixture)
+
+        bad_file = os.path.join(remapped_dir, target_rel.replace("/", os.sep))
+        self.assertTrue(os.path.isfile(bad_file))
+        os.remove(bad_file)
+
+        new_work_dir = os.path.join(self.work_dir, "remap_miss_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError) as ctx:
+            snapshot_mod.restore_snapshot(
+                new_db_path,
+                snapshot_path,
+                evidence_dir=remapped_dir,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("证据文件缺失", msg)
+        self.assertIn(target_rel, msg)
+        self.assertIn(str(target_line), msg)
+
+        batches_after = db.list_batches(new_db_path)
+        self.assertEqual(len(batches_after), 0)
+
+        intact = os.path.join(self.work_dir, "remap_fixture_intact")
+        _, intact_dir, _ = self._create_isolated_fixture(intact)
+        restored_batch, count = snapshot_mod.restore_snapshot(
+            new_db_path,
+            snapshot_path,
+            evidence_dir=intact_dir,
+        )
+        self.assertEqual(restored_batch, "iso_remap_miss")
+        self.assertGreater(count, 0)
+
+        new_batch = db.get_batch_by_no(new_db_path, restored_batch)
+        items = db.get_evidence_items(new_db_path, new_batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self.assertGreater(len(pending), 0)
+
+        log_id = db.review_item(
+            new_db_path,
+            batch_id=new_batch["id"],
+            item_id=pending[0]["id"],
+            new_status="supplement",
+            remark="remap后补的复核",
+            operator="tester_remap",
+            action="review",
+        )
+        self.assertIsInstance(log_id, int)
+        self.assertGreater(log_id, 0)
+
+        undo = db.undo_last_review(new_db_path, new_batch["id"], operator="tester_remap")
+        self.assertIsNotNone(undo)
+
+        from evidence_cli import report as report_mod
+        export_path = os.path.join(new_work_dir, "remap_export.json")
+        c = report_mod.export_json(
+            db.get_evidence_items(new_db_path, new_batch["id"]),
+            export_path,
+            batch_info=new_batch,
+        )
+        self.assertGreater(c, 0)
+        self.assertTrue(os.path.exists(export_path))
 
 
 if __name__ == "__main__":
