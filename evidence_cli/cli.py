@@ -108,14 +108,13 @@ def import_cmd(ctx, batch_no, manifest_path, evidence_dir, description, force):
         click.echo(f"错误: {e}", err=True)
         sys.exit(1)
 
+    has_errors = len(result.errors) > 0 or len(result.duplicates) > 0
+
     if result.errors:
         click.echo("")
         click.echo(f"清单解析发现 {len(result.errors)} 个问题:")
         for err in result.errors:
             click.echo(f"  第{err.line_no}行: {err.message}")
-        if not result.items:
-            click.echo("\n没有可导入的有效条目，导入终止。", err=True)
-            sys.exit(1)
 
     if result.duplicates:
         click.echo("")
@@ -128,6 +127,17 @@ def import_cmd(ctx, batch_no, manifest_path, evidence_dir, description, force):
         click.echo("")
         click.echo(f"错误: 批次 '{batch_no}' 已存在，使用 --force 强制重新导入", err=True)
         sys.exit(1)
+
+    if has_errors:
+        if batch_exists and force:
+            total_bad = len(result.errors)
+            click.echo("")
+            click.echo(f"错误: 清单包含 {total_bad} 条问题记录，无法安全替换旧批次。", err=True)
+            click.echo("请修复清单后再试，旧批次数据保持不变。", err=True)
+            sys.exit(1)
+        if not result.items:
+            click.echo("\n没有可导入的有效条目，导入终止。", err=True)
+            sys.exit(1)
 
     if batch_exists and force:
         old_batch = db.get_batch_by_no(db_path, batch_no)
