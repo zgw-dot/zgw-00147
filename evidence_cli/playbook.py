@@ -1,5 +1,6 @@
 """批次操作剧本：将批量 precheck/review/undo/export 动作存成 JSON 剧本，预演后正式执行"""
 
+import csv
 import json
 import os
 import time
@@ -41,19 +42,6 @@ def create_playbook(
     output_file: str = "",
     description: str = "",
 ) -> Dict:
-    """
-    构建剧本数据结构。
-
-    steps 中每项:
-      - type: precheck | review | undo | export
-      - filter_status: 可选，筛选状态（all/pending/signed/supplement/failed_precheck）
-      - line_range: 可选，[start, end] manifest 行号范围
-      - target_status: review 步骤必填，signed 或 supplement
-      - remark_template: 可选，备注模板（支持 {batch_no} {item_id} {file_path} 占位符）
-      - operator: 可选，覆盖剧本级操作人
-      - output_path: export 步骤必填，输出文件路径
-      - export_format: export 步骤可选，csv/json/auto（默认 auto）
-    """
     playbook = {
         "version": PLAYBOOK_VERSION,
         "batch_no": batch_no,
@@ -182,26 +170,6 @@ def preview_playbook(
     db_path: str,
     playbook: Dict,
 ) -> Dict:
-    """
-    预演剧本，不修改数据库。
-
-    返回结构:
-    {
-        "can_execute": bool,
-        "batch_no": str,
-        "steps": [
-            {
-                "order": int,
-                "type": str,
-                "matched_items": [...],
-                "skipped_reasons": [...],
-                "will_overwrite": [...],
-                "conflicts": [...],
-            },
-        ],
-        "global_conflicts": [...],
-    }
-    """
     batch_no = playbook["batch_no"]
     batch = db.get_batch_by_no(db_path, batch_no)
 
@@ -221,8 +189,6 @@ def preview_playbook(
     if run and run["status"] == "executing":
         result["can_execute"] = False
         result["global_conflicts"].append(f"批次 '{batch_no}' 有正在执行中的剧本运行 #{run['id']}，无法开始新执行")
-
-    batch_fingerprint = _compute_batch_fingerprint(db_path, batch)
 
     for step in playbook["steps"]:
         step_preview = {
@@ -291,6 +257,12 @@ def preview_playbook(
                     f"输出文件已存在: {output_path}，执行时会被覆盖"
                 )
                 step_preview["will_overwrite"].append(f"文件: {output_path}")
+            if output_path:
+                parent = os.path.dirname(os.path.abspath(output_path))
+                if parent and os.path.isdir(parent) and not os.access(parent, os.W_OK):
+                    step_preview["conflicts"].append(
+                        f"导出目录只读: {parent}，无法写入"
+                    )
             all_items = db.get_evidence_items(db_path, batch["id"])
             step_preview["matched_items"] = [
                 {
@@ -318,29 +290,8 @@ def execute_playbook(
     playbook: Dict,
     operator: Optional[str] = None,
     force: bool = False,
+    library_name: Optional[str] = None,
 ) -> Dict:
-    """
-    正式执行剧本。
-
-    每步结果落 SQLite 日志。中途某步失败则回滚前面已执行的步骤。
-
-    返回结构:
-    {
-        "run_id": int,
-        "batch_no": str,
-        "status": "completed" | "failed" | "rolled_back",
-        "steps": [
-            {
-                "order": int,
-                "type": str,
-                "status": "success" | "skipped" | "failed",
-                "affected_items": [...],
-                "error": str | None,
-            },
-        ],
-        "error": str | None,
-    }
-    """
     batch_no = playbook["batch_no"]
     batch = db.get_batch_by_no(db_path, batch_no)
     if not batch:
@@ -376,10 +327,17 @@ def execute_playbook(
         for step in playbook.get("steps", []):
             if step.get("type") == "export":
                 step_output = step.get("output_path")
-                if step_output and os.path.isfile(os.path.abspath(step_output)):
-                    raise PlaybookConflictError(
-                        f"导出步骤输出文件已存在: {step_output}，使用 --force 覆盖"
-                    )
+                if step_output:
+                    abs_step_output = os.path.abspath(step_output)
+                    parent = os.path.dirname(abs_step_output)
+                    if parent and os.path.isdir(parent) and not os.access(parent, os.W_OK):
+                        raise PlaybookConflictError(
+                            f"导出目录只读: {parent}，无法写入 {step_output}"
+                        )
+                    if os.path.isfile(abs_step_output):
+                        raise PlaybookConflictError(
+                            f"导出步骤输出文件已存在: {step_output}，使用 --force 覆盖"
+                        )
 
     preview = preview_playbook(db_path, playbook)
     if not preview["can_execute"] and not force:
@@ -437,6 +395,11 @@ def execute_playbook(
             _rollback_executed_steps(db_path, executed_steps, batch_no, playbook_operator)
             db.update_playbook_run_status(db_path, run_id=run_id, status="rolled_back",
                                           error_message=overall_error)
+            if library_name:
+                try:
+                    db.update_playbook_library_last_run(db_path, library_name, run_id, "rolled_back")
+                except Exception:
+                    pass
             return {
                 "run_id": run_id,
                 "batch_no": batch_no,
@@ -466,6 +429,11 @@ def execute_playbook(
         batch_ref = db.get_batch_by_no(db_path, batch_no) or batch_ref
 
     db.update_playbook_run_status(db_path, run_id=run_id, status="completed")
+    if library_name:
+        try:
+            db.update_playbook_library_last_run(db_path, library_name, run_id, "completed")
+        except Exception:
+            pass
     return {
         "run_id": run_id,
         "batch_no": batch_no,
@@ -649,3 +617,375 @@ def get_playbook_history(db_path: str, batch_no: str, limit: int = 20) -> List[D
 
 def get_playbook_run_detail(db_path: str, run_id: int) -> Optional[Dict]:
     return db.get_playbook_run_with_steps(db_path, run_id)
+
+
+def parse_step_spec(spec: str) -> Dict:
+    """
+    解析单条步骤描述字符串。
+
+    格式:
+      precheck[:filter_status]
+      review:target_status[:filter_status][:line_range_start-line_range_end][:remark_template]
+      undo[:operator]
+      export:output_path[:export_format]
+
+    示例:
+      "precheck"
+      "precheck:failed_precheck"
+      "review:signed"
+      "review:signed:pending"
+      "review:signed:pending:1-5"
+      "review:signed:pending:1-5:批次{batch_no}签收"
+      "undo"
+      "undo:op1"
+      "export:/tmp/out.json"
+      "export:/tmp/out.json:json"
+    """
+    parts = spec.split(":")
+    step_type = parts[0].strip().lower()
+
+    if step_type not in PLAYBOOK_STEP_TYPES:
+        raise PlaybookFormatError(f"不支持的步骤类型: '{step_type}'")
+
+    entry: Dict = {"type": step_type}
+
+    if step_type == "precheck":
+        if len(parts) > 1 and parts[1].strip():
+            entry["filter_status"] = parts[1].strip()
+
+    elif step_type == "review":
+        if len(parts) < 2 or not parts[1].strip():
+            raise PlaybookFormatError("review 步骤必须指定 target_status，格式: review:signed 或 review:supplement")
+        entry["target_status"] = parts[1].strip()
+        if len(parts) > 2 and parts[2].strip():
+            entry["filter_status"] = parts[2].strip()
+        if len(parts) > 3 and parts[3].strip():
+            lr_str = parts[3].strip()
+            if "-" in lr_str:
+                lr_parts = lr_str.split("-", 1)
+                try:
+                    entry["line_range"] = [int(lr_parts[0]), int(lr_parts[1])]
+                except ValueError:
+                    raise PlaybookFormatError(f"行号范围格式错误: '{lr_str}'，应为 start-end")
+            else:
+                raise PlaybookFormatError(f"行号范围格式错误: '{lr_str}'，应为 start-end")
+        if len(parts) > 4 and parts[4].strip():
+            entry["remark_template"] = parts[4].strip()
+
+    elif step_type == "undo":
+        if len(parts) > 1 and parts[1].strip():
+            entry["operator"] = parts[1].strip()
+
+    elif step_type == "export":
+        if len(parts) < 2 or not parts[1].strip():
+            raise PlaybookFormatError("export 步骤必须指定 output_path，格式: export:/path/to/file[:format]")
+        rest = spec[len(parts[0]) + 1:]
+        known_formats = ("json", "csv", "auto")
+        fmt = None
+        for f in known_formats:
+            suffix = ":" + f
+            if rest.endswith(suffix):
+                fmt = f
+                rest = rest[:-len(suffix)]
+                break
+        entry["output_path"] = rest.strip()
+        if fmt:
+            entry["export_format"] = fmt
+
+    return entry
+
+
+def generate_from_args(
+    batch_no: str,
+    step_specs: List[str],
+    operator: str = "",
+    description: str = "",
+    output_file: str = "",
+    filter_status: str = "",
+    line_range: Optional[str] = None,
+    remark_template: str = "",
+) -> Dict:
+    """
+    从命令行步骤描述字符串生成剧本。
+
+    step_specs 为 parse_step_spec 格式的字符串列表。
+    全局 filter_status / line_range / remark_template 会合并到各步骤（步骤级优先）。
+    """
+    steps = []
+    for spec in step_specs:
+        step = parse_step_spec(spec)
+        if filter_status and "filter_status" not in step:
+            step["filter_status"] = filter_status
+        if line_range and "line_range" not in step:
+            lr_parts = line_range.split("-", 1)
+            try:
+                step["line_range"] = [int(lr_parts[0]), int(lr_parts[1])]
+            except (ValueError, IndexError):
+                raise PlaybookFormatError(f"全局行号范围格式错误: '{line_range}'")
+        if remark_template and "remark_template" not in step and step["type"] == "review":
+            step["remark_template"] = remark_template
+        steps.append(step)
+
+    return create_playbook(
+        batch_no=batch_no,
+        steps=steps,
+        operator=operator,
+        output_file=output_file,
+        description=description,
+    )
+
+
+def generate_from_csv(
+    batch_no: str,
+    csv_path: str,
+    operator: str = "",
+    description: str = "",
+    output_file: str = "",
+) -> Dict:
+    """
+    从 CSV 模板文件生成剧本。
+
+    CSV 格式（首行为表头）:
+      type,filter_status,line_range,target_status,remark_template,operator,output_path,export_format
+      precheck,pending,,,,,,
+      review,pending,,signed,批次{batch_no}签收{file_path},,,
+      export,all,,,,/tmp/out.json,json
+    """
+    if not os.path.isfile(csv_path):
+        raise PlaybookError(f"CSV 模板文件不存在: {csv_path}")
+
+    steps = []
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row_idx, row in enumerate(reader, start=2):
+            step_type = row.get("type", "").strip().lower()
+            if not step_type:
+                continue
+            if step_type not in PLAYBOOK_STEP_TYPES:
+                raise PlaybookFormatError(f"CSV 第 {row_idx} 行: 不支持的类型 '{step_type}'")
+
+            step: Dict = {"type": step_type}
+
+            fs = row.get("filter_status", "").strip()
+            if fs:
+                step["filter_status"] = fs
+
+            lr = row.get("line_range", "").strip()
+            if lr:
+                if "-" in lr:
+                    lr_parts = lr.split("-", 1)
+                    try:
+                        step["line_range"] = [int(lr_parts[0]), int(lr_parts[1])]
+                    except ValueError:
+                        raise PlaybookFormatError(f"CSV 第 {row_idx} 行: 行号范围格式错误 '{lr}'")
+                else:
+                    raise PlaybookFormatError(f"CSV 第 {row_idx} 行: 行号范围格式错误 '{lr}'")
+
+            if step_type == "review":
+                ts = row.get("target_status", "").strip()
+                if ts not in ("signed", "supplement"):
+                    raise PlaybookFormatError(
+                        f"CSV 第 {row_idx} 行: review 步骤必须指定 target_status (signed/supplement)"
+                    )
+                step["target_status"] = ts
+
+            rt = row.get("remark_template", "").strip()
+            if rt:
+                step["remark_template"] = rt
+
+            so = row.get("operator", "").strip()
+            if so:
+                step["operator"] = so
+
+            if step_type == "export":
+                op = row.get("output_path", "").strip()
+                if not op:
+                    raise PlaybookFormatError(f"CSV 第 {row_idx} 行: export 步骤必须指定 output_path")
+                step["output_path"] = op
+                ef = row.get("export_format", "").strip()
+                if ef:
+                    step["export_format"] = ef
+
+            steps.append(step)
+
+    if not steps:
+        raise PlaybookFormatError("CSV 模板中没有有效的步骤定义")
+
+    return create_playbook(
+        batch_no=batch_no,
+        steps=steps,
+        operator=operator,
+        output_file=output_file,
+        description=description,
+    )
+
+
+def generate_from_last_run(
+    db_path: str,
+    batch_no: str,
+    operator: str = "",
+    description: str = "",
+    output_file: str = "",
+) -> Dict:
+    """
+    从最近一次批次操作记录生成剧本。
+
+    扫描 review_logs 中最近的复核/撤销操作，按操作类型逆向构建步骤：
+    - 连续的 review 操作合并为一个 review 步骤
+    - undo 操作生成一个 undo 步骤
+    如果最后一条记录是 undo，会在剧本中重建该 undo 步骤，方便"撤销后重放"。
+    """
+    batch = db.get_batch_by_no(db_path, batch_no)
+    if not batch:
+        raise PlaybookError(f"批次 '{batch_no}' 不存在")
+
+    last_run = db.get_last_playbook_run(db_path, batch_no)
+    if not last_run:
+        raise PlaybookError(f"批次 '{batch_no}' 没有剧本执行记录，无法从最近操作生成")
+
+    playbook_data = last_run.get("playbook_data")
+    if isinstance(playbook_data, str):
+        try:
+            playbook_data = json.loads(playbook_data)
+        except (json.JSONDecodeError, TypeError):
+            raise PlaybookError(f"剧本运行 #{last_run['id']} 的 playbook_data 无法解析")
+
+    if not playbook_data or "steps" not in playbook_data:
+        raise PlaybookError(f"剧本运行 #{last_run['id']} 没有可用的步骤数据")
+
+    steps = playbook_data["steps"]
+
+    desc = description or f"从运行 #{last_run['id']} 重放的剧本"
+
+    pb = create_playbook(
+        batch_no=batch_no,
+        steps=steps,
+        operator=operator or playbook_data.get("operator", ""),
+        output_file=output_file or playbook_data.get("output_file", ""),
+        description=desc,
+    )
+
+    if last_run.get("status"):
+        pb["replayed_from_run_id"] = last_run["id"]
+        pb["replayed_from_status"] = last_run["status"]
+
+    if output_file:
+        for step in pb.get("steps", []):
+            if step.get("type") == "export" and step.get("output_path"):
+                step["output_path"] = output_file
+                step["export_format"] = "auto"
+
+    return pb
+
+
+def check_playbook(
+    db_path: str,
+    playbook: Dict,
+    name: Optional[str] = None,
+) -> Dict:
+    """
+    剧本检查：比 preview 更全面的冲突检测，正式执行前调用。
+
+    额外检查:
+    - 同名剧本在库中已存在
+    - 批次在剧本生成后被修改
+    - 导出目录只读
+    - 版本冲突
+    - 最近一次运行结果
+    """
+    result = preview_playbook(db_path, playbook)
+
+    result["check_warnings"] = []
+    result["check_errors"] = []
+    result["same_name_conflict"] = False
+    result["batch_modified"] = False
+    result["readonly_export_dir"] = False
+    result["version_ok"] = True
+
+    pb_version = playbook.get("version", "")
+    if pb_version != PLAYBOOK_VERSION:
+        result["version_ok"] = False
+        result["check_errors"].append(
+            f"剧本版本不兼容: 当前 {PLAYBOOK_VERSION}，剧本 {pb_version}"
+        )
+        result["can_execute"] = False
+
+    if name and db.playbook_name_exists(db_path, name):
+        existing = db.get_playbook_from_library(db_path, name)
+        result["same_name_conflict"] = True
+        if existing:
+            detail = (
+                f"同名剧本 '{name}' 已存在于库中（创建于 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(existing['created_at']))}），"
+                f"使用 --overwrite 覆盖"
+            )
+            result["check_warnings"].append(detail)
+
+    batch_no = playbook["batch_no"]
+    batch = db.get_batch_by_no(db_path, batch_no)
+    if batch:
+        pb_batch_updated_at = playbook.get("batch_updated_at")
+        if pb_batch_updated_at is not None and batch["updated_at"] != pb_batch_updated_at:
+            result["batch_modified"] = True
+            result["check_warnings"].append(
+                f"批次 '{batch_no}' 在剧本生成后被修改过，执行时需要 --force"
+            )
+
+    for step in playbook.get("steps", []):
+        if step.get("type") == "export":
+            output_path = step.get("output_path", "")
+            if output_path:
+                abs_path = os.path.abspath(output_path)
+                parent = os.path.dirname(abs_path)
+                if parent and os.path.isdir(parent) and not os.access(parent, os.W_OK):
+                    result["readonly_export_dir"] = True
+                    result["check_errors"].append(
+                        f"导出目录只读: {parent}，无法写入 {output_path}"
+                    )
+                    result["can_execute"] = False
+                elif parent and not os.path.exists(parent):
+                    result["check_warnings"].append(
+                        f"导出目录尚不存在: {parent}，执行时会自动创建"
+                    )
+
+    if name and db.playbook_name_exists(db_path, name):
+        existing = db.get_playbook_from_library(db_path, name)
+        if existing and existing.get("last_run_status"):
+            result["check_warnings"].append(
+                f"同名剧本上次运行状态: {existing['last_run_status']}"
+            )
+
+    return result
+
+
+def save_to_library(
+    db_path: str,
+    name: str,
+    playbook: Dict,
+    overwrite: bool = False,
+) -> int:
+    return db.save_playbook_to_library(
+        db_path,
+        name=name,
+        batch_no=playbook["batch_no"],
+        playbook_data=playbook,
+        description=playbook.get("description", ""),
+        operator=playbook.get("operator", ""),
+        output_file=playbook.get("output_file", ""),
+        version=playbook.get("version", PLAYBOOK_VERSION),
+        overwrite=overwrite,
+    )
+
+
+def load_from_library(db_path: str, name: str) -> Optional[Dict]:
+    record = db.get_playbook_from_library(db_path, name)
+    if not record:
+        return None
+    return record
+
+
+def list_library(db_path: str, batch_no: Optional[str] = None) -> List[Dict]:
+    return db.list_playbook_library(db_path, batch_no=batch_no)
+
+
+def delete_from_library(db_path: str, name: str) -> bool:
+    return db.delete_playbook_from_library(db_path, name)

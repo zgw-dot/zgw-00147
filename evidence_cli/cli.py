@@ -1198,7 +1198,7 @@ def snapshot_check(ctx, batch_no):
 @main.group()
 @click.pass_context
 def playbook(ctx):
-    """批次操作剧本：导入剧本、预演、正式执行、回看历史"""
+    """批次操作剧本：生成、导入、检查、预演、执行、回看历史"""
     pass
 
 
@@ -1490,6 +1490,433 @@ def playbook_history(ctx, batch_no, limit):
                     "[SKIP]" if s["status"] == "skipped" else "[FAIL]"
                 )
                 click.echo(f"      {s['step_order']}. {s['step_type']} {s_tag}")
+
+
+@playbook.command("generate")
+@click.option("--batch", "-b", "batch_no", required=True, help="批次编号")
+@click.option("--step", "-s", "steps", multiple=True,
+              help="步骤描述（可多次指定），格式: type[:detail]")
+@click.option("--from-csv", "csv_path", default=None,
+              type=click.Path(exists=True, dir_okay=False), help="从 CSV 模板生成")
+@click.option("--from-last-run", is_flag=True, help="从最近一次剧本运行记录生成")
+@click.option("--name", "-n", "playbook_name", default=None, help="剧本名称（保存到库时使用）")
+@click.option("--operator", default="", help="操作人")
+@click.option("--description", "-d", default="", help="剧本描述")
+@click.option("--output-file", default="", help="剧本级输出文件路径")
+@click.option("--filter-status", "-f", default="",
+              type=click.Choice(["", "all", "pending", "signed", "supplement", "failed_precheck"]),
+              help="全局筛选状态（步骤级未指定时生效）")
+@click.option("--line-range", default=None, help="全局行号范围 start-end（步骤级未指定时生效）")
+@click.option("--remark-template", default="", help="全局备注模板（review 步骤级未指定时生效）")
+@click.option("--save", "save_to_lib", is_flag=True, help="保存到剧本库")
+@click.option("--overwrite", is_flag=True, help="覆盖同名剧本（配合 --save）")
+@click.option("--output", "output_path", default=None, help="剧本 JSON 输出文件路径")
+@click.pass_context
+def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, playbook_name,
+                      operator, description, output_file, filter_status, line_range,
+                      remark_template, save_to_lib, overwrite, output_path):
+    """生成剧本：从命令参数、CSV 模板或最近一次批次操作记录"""
+    db_path = ensure_db(ctx)
+
+    source_count = sum(1 for s in [steps, csv_path, from_last_run] if s)
+    if source_count == 0:
+        click.echo("错误: 必须指定至少一种生成来源 (--step / --from-csv / --from-last-run)", err=True)
+        sys.exit(1)
+    if source_count > 1:
+        click.echo("错误: 只能指定一种生成来源", err=True)
+        sys.exit(1)
+
+    try:
+        if steps:
+            pb = playbook_mod.generate_from_args(
+                batch_no=batch_no,
+                step_specs=list(steps),
+                operator=operator,
+                description=description,
+                output_file=output_file,
+                filter_status=filter_status,
+                line_range=line_range,
+                remark_template=remark_template,
+            )
+        elif csv_path:
+            pb = playbook_mod.generate_from_csv(
+                batch_no=batch_no,
+                csv_path=os.path.abspath(csv_path),
+                operator=operator,
+                description=description,
+                output_file=output_file,
+            )
+        elif from_last_run:
+            pb = playbook_mod.generate_from_last_run(
+                db_path=db_path,
+                batch_no=batch_no,
+                operator=operator,
+                description=description,
+                output_file=output_file,
+            )
+        else:
+            click.echo("错误: 未指定生成来源", err=True)
+            sys.exit(1)
+    except playbook_mod.PlaybookError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except playbook_mod.PlaybookFormatError as e:
+        click.echo(f"格式错误: {e}", err=True)
+        sys.exit(1)
+
+    batch = db.get_batch_by_no(db_path, batch_no)
+    if batch:
+        pb["batch_updated_at"] = batch["updated_at"]
+
+    click.echo("=" * 60)
+    click.echo(f"剧本已生成: 批次 '{batch_no}'")
+    click.echo(f"  版本: {pb['version']}")
+    if pb.get("description"):
+        click.echo(f"  描述: {pb['description']}")
+    if pb.get("operator"):
+        click.echo(f"  操作人: {pb['operator']}")
+    if pb.get("output_file"):
+        click.echo(f"  输出文件: {pb['output_file']}")
+    if pb.get("batch_updated_at"):
+        click.echo(f"  批次快照: {format_time(pb['batch_updated_at'])}")
+    if pb.get("replayed_from_run_id"):
+        click.echo(f"  重放来源: 运行 #{pb['replayed_from_run_id']} ({pb.get('replayed_from_status', '')})")
+    click.echo(f"  步骤数: {len(pb['steps'])}")
+    click.echo("")
+
+    click.echo("步骤列表:")
+    for step in pb["steps"]:
+        desc = _describe_playbook_step(step)
+        click.echo(f"  {step['order']}. {desc}")
+
+    if save_to_lib and playbook_name:
+        try:
+            rid = playbook_mod.save_to_library(db_path, playbook_name, pb, overwrite=overwrite)
+            click.echo(f"\n已保存到剧本库: {playbook_name} (ID: {rid})")
+        except ValueError as e:
+            click.echo(f"\n错误: {e}", err=True)
+            sys.exit(1)
+
+    if output_path:
+        saved = playbook_mod.save_playbook(pb, output_path)
+        click.echo(f"\n剧本文件已保存: {saved}")
+
+    click.echo("=" * 60)
+    click.echo("")
+    click.echo("提示: 使用 'evi playbook check --name <名称>' 检查冲突")
+    click.echo("      使用 'evi playbook run --name <名称>' 执行库中剧本")
+
+
+@playbook.command("check")
+@click.option("--name", "-n", "playbook_name", default=None, help="剧本库名称")
+@click.option("--playbook-file", "-p", "playbook_path", default=None,
+              type=click.Path(exists=True, dir_okay=False), help="剧本 JSON 文件路径")
+@click.pass_context
+def playbook_check(ctx, playbook_name, playbook_path):
+    """检查剧本冲突：同名、批次修改、导出只读、版本、文件冲突"""
+    db_path = ensure_db(ctx)
+
+    if not playbook_name and not playbook_path:
+        click.echo("错误: 必须指定 --name 或 --playbook-file", err=True)
+        sys.exit(1)
+
+    pb = None
+    check_name = playbook_name
+
+    if playbook_name:
+        record = playbook_mod.load_from_library(db_path, playbook_name)
+        if not record:
+            click.echo(f"错误: 剧本库中不存在 '{playbook_name}'", err=True)
+            sys.exit(1)
+        pb = record["playbook_data"]
+        if isinstance(pb, str):
+            import json as _json
+            try:
+                pb = _json.loads(pb)
+            except (_json.JSONDecodeError, TypeError):
+                click.echo(f"错误: 剧本数据无法解析", err=True)
+                sys.exit(1)
+    elif playbook_path:
+        try:
+            pb = playbook_mod.load_playbook(os.path.abspath(playbook_path))
+        except playbook_mod.PlaybookError as e:
+            click.echo(f"错误: {e}", err=True)
+            sys.exit(1)
+
+    check_result = playbook_mod.check_playbook(db_path, pb, name=check_name)
+
+    click.echo("=" * 60)
+    click.echo(f"剧本检查: 批次 '{check_result['batch_no']}'")
+    click.echo("=" * 60)
+
+    if check_result["can_execute"]:
+        click.echo("[OK] 可以执行")
+    else:
+        click.echo("[X] 无法执行")
+
+    if not check_result.get("version_ok", True):
+        click.echo(f"  [!] 版本冲突")
+
+    if check_result.get("same_name_conflict"):
+        click.echo(f"  [!] 同名剧本冲突")
+
+    if check_result.get("batch_modified"):
+        click.echo(f"  [!] 批次已被修改")
+
+    if check_result.get("readonly_export_dir"):
+        click.echo(f"  [!] 导出目录只读")
+
+    if check_result.get("check_errors"):
+        click.echo("")
+        click.echo("阻断性错误:")
+        for e in check_result["check_errors"]:
+            click.echo(f"  [X] {e}")
+
+    if check_result.get("check_warnings"):
+        click.echo("")
+        click.echo("告警:")
+        for w in check_result["check_warnings"]:
+            click.echo(f"  [!] {w}")
+
+    if check_result["global_conflicts"]:
+        click.echo("")
+        click.echo("全局冲突:")
+        for c in check_result["global_conflicts"]:
+            click.echo(f"  {c}")
+
+    click.echo("")
+    for sp in check_result["steps"]:
+        click.echo(f"--- 步骤 {sp['order']}: {sp['type']} ---")
+
+        matched = sp["matched_items"]
+        skipped = sp["skipped_reasons"]
+        overwrites = sp["will_overwrite"]
+        conflicts = sp["conflicts"]
+
+        if matched:
+            click.echo(f"  命中: {len(matched)} 项")
+            for m in matched[:10]:
+                fp = m.get("file_path", "")
+                iid = m.get("id", "?")
+                click.echo(f"    #{iid} {fp}")
+                if m.get("current_status") and m.get("target_status"):
+                    click.echo(f"      {m['current_status']} → {m['target_status']}")
+                if m.get("current_precheck_status"):
+                    click.echo(f"      预检: {m['current_precheck_status']}")
+                if m.get("will_revert_to"):
+                    click.echo(f"      {m.get('current_status', '?')} → {m['will_revert_to']}")
+            if len(matched) > 10:
+                click.echo(f"    ... 还有 {len(matched) - 10} 项")
+
+        if skipped:
+            click.echo(f"  跳过: {len(skipped)} 条")
+            for s in skipped:
+                click.echo(f"    - {s}")
+
+        if overwrites:
+            click.echo(f"  覆盖: {len(overwrites)} 条")
+            for o in overwrites:
+                click.echo(f"    - {o}")
+
+        if conflicts:
+            click.echo(f"  冲突: {len(conflicts)} 条")
+            for c in conflicts:
+                click.echo(f"    [!] {c}")
+
+        click.echo("")
+
+    click.echo("=" * 60)
+
+    if not check_result["can_execute"]:
+        sys.exit(1)
+
+
+@playbook.command("list")
+@click.option("--batch", "-b", "batch_no", default=None, help="按批次筛选")
+@click.pass_context
+def playbook_list(ctx, batch_no):
+    """列出剧本库中的剧本"""
+    db_path = ensure_db(ctx)
+
+    items = playbook_mod.list_library(db_path, batch_no=batch_no)
+
+    if not items:
+        click.echo("剧本库为空")
+        return
+
+    click.echo(f"剧本库（共 {len(items)} 个）:")
+    click.echo("")
+    for item in items:
+        click.echo(f"  {item['name']}")
+        click.echo(f"    批次: {item['batch_no']}  版本: {item.get('version', '?')}")
+        if item.get("description"):
+            click.echo(f"    描述: {item['description']}")
+        if item.get("operator"):
+            click.echo(f"    操作人: {item['operator']}")
+        click.echo(f"    创建: {format_time(item['created_at'])}  修改: {format_time(item['modified_at'])}")
+        if item.get("last_run_status"):
+            run_tag = item["last_run_status"]
+            click.echo(f"    上次运行: {run_tag} (运行 #{item.get('last_run_id', '?')})")
+        else:
+            click.echo(f"    上次运行: (未运行)")
+
+
+@playbook.command("show")
+@click.option("--name", "-n", "playbook_name", required=True, help="剧本名称")
+@click.pass_context
+def playbook_show(ctx, playbook_name):
+    """查看剧本库中剧本详情"""
+    db_path = ensure_db(ctx)
+
+    record = playbook_mod.load_from_library(db_path, playbook_name)
+    if not record:
+        click.echo(f"错误: 剧本 '{playbook_name}' 不存在", err=True)
+        sys.exit(1)
+
+    pb = record.get("playbook_data")
+    if isinstance(pb, str):
+        import json as _json
+        try:
+            pb = _json.loads(pb)
+        except (_json.JSONDecodeError, TypeError):
+            click.echo(f"错误: 剧本数据无法解析", err=True)
+            sys.exit(1)
+
+    click.echo("=" * 60)
+    click.echo(f"剧本: {playbook_name}")
+    click.echo("=" * 60)
+    click.echo(f"  批次: {record['batch_no']}")
+    click.echo(f"  版本: {record.get('version', '?')}")
+    if record.get("description"):
+        click.echo(f"  描述: {record['description']}")
+    if record.get("operator"):
+        click.echo(f"  操作人: {record['operator']}")
+    if record.get("output_file"):
+        click.echo(f"  输出文件: {record['output_file']}")
+    click.echo(f"  创建: {format_time(record['created_at'])}")
+    click.echo(f"  修改: {format_time(record['modified_at'])}")
+    if record.get("last_run_status"):
+        click.echo(f"  上次运行: {record['last_run_status']} (运行 #{record.get('last_run_id', '?')})")
+    click.echo("")
+
+    if pb:
+        click.echo("步骤列表:")
+        for step in pb.get("steps", []):
+            desc = _describe_playbook_step(step)
+            click.echo(f"  {step.get('order', '?')}. {desc}")
+
+    click.echo("=" * 60)
+
+
+@playbook.command("run")
+@click.option("--name", "-n", "playbook_name", required=True, help="剧本库名称")
+@click.option("--operator", "-o", default=None, help="覆盖剧本中的操作人")
+@click.option("--force", "-f", is_flag=True,
+              help="强制执行（跳过批次修改检测和输出文件冲突）")
+@click.pass_context
+def playbook_run(ctx, playbook_name, operator, force):
+    """执行剧本库中的剧本"""
+    db_path = ensure_db(ctx)
+
+    record = playbook_mod.load_from_library(db_path, playbook_name)
+    if not record:
+        click.echo(f"错误: 剧本 '{playbook_name}' 不存在", err=True)
+        sys.exit(1)
+
+    pb = record.get("playbook_data")
+    if isinstance(pb, str):
+        import json as _json
+        try:
+            pb = _json.loads(pb)
+        except (_json.JSONDecodeError, TypeError):
+            click.echo(f"错误: 剧本数据无法解析", err=True)
+            sys.exit(1)
+
+    if not force:
+        check_result = playbook_mod.check_playbook(db_path, pb)
+        if not check_result["can_execute"]:
+            if check_result.get("check_errors"):
+                for e in check_result["check_errors"]:
+                    click.echo(f"错误: {e}", err=True)
+            if check_result.get("check_warnings"):
+                for w in check_result["check_warnings"]:
+                    click.echo(f"告警: {w}", err=True)
+            click.echo("使用 --force 强制执行，或修正上述问题后重试", err=True)
+            sys.exit(1)
+        if check_result.get("check_warnings"):
+            for w in check_result["check_warnings"]:
+                click.echo(f"告警: {w}")
+
+    try:
+        result = playbook_mod.execute_playbook(
+            db_path, pb, operator=operator, force=force,
+            library_name=playbook_name,
+        )
+    except playbook_mod.PlaybookConflictError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except playbook_mod.PlaybookStepError as e:
+        click.echo(f"执行失败: {e}", err=True)
+        sys.exit(1)
+
+    click.echo("=" * 60)
+    click.echo(f"剧本执行: {playbook_name}  批次 '{result['batch_no']}'")
+    click.echo(f"运行 ID: #{result['run_id']}")
+    click.echo(f"状态: {result['status']}")
+    click.echo("=" * 60)
+
+    for sr in result["steps"]:
+        status_tag = "[OK]" if sr["status"] == "success" else (
+            "[SKIP]" if sr["status"] == "skipped" else "[FAIL]"
+        )
+        click.echo(f"  步骤 {sr['order']}: {sr['type']} {status_tag}")
+
+        if sr["status"] == "success" and sr.get("affected_items"):
+            for ai in sr["affected_items"]:
+                if sr["type"] == "review":
+                    click.echo(f"    #{ai.get('id', '?')} {ai.get('file_path', '')} "
+                               f"{ai.get('old_status', '')} → {ai.get('new_status', '')}")
+                elif sr["type"] == "precheck":
+                    click.echo(f"    #{ai.get('id', '?')} {ai.get('file_path', '')} "
+                               f"预检: {ai.get('precheck_status', '')}")
+                elif sr["type"] == "undo":
+                    click.echo(f"    #{ai.get('item_id', '?')} {ai.get('file_path', '')} "
+                               f"{ai.get('reverted_from', '')} → {ai.get('reverted_to', '')}")
+                elif sr["type"] == "export":
+                    click.echo(f"    输出: {ai.get('output_path', '')} "
+                               f"({ai.get('format', '')}, {ai.get('count', 0)} 条)")
+
+        if sr["status"] == "failed" and sr.get("error"):
+            click.echo(f"    错误: {sr['error']}")
+
+        if sr["status"] == "skipped":
+            click.echo("    (无匹配项，已跳过)")
+
+    if result["status"] == "rolled_back":
+        click.echo("")
+        click.echo("[!] 剧本执行失败，已回滚前面成功的步骤")
+        if result.get("error"):
+            click.echo(f"    失败原因: {result['error']}")
+
+    click.echo("=" * 60)
+
+    if result["status"] != "completed":
+        sys.exit(1)
+
+
+@playbook.command("delete")
+@click.option("--name", "-n", "playbook_name", required=True, help="剧本名称")
+@click.pass_context
+def playbook_delete(ctx, playbook_name):
+    """删除剧本库中的剧本"""
+    db_path = ensure_db(ctx)
+
+    deleted = playbook_mod.delete_from_library(db_path, playbook_name)
+    if deleted:
+        click.echo(f"已删除剧本: {playbook_name}")
+    else:
+        click.echo(f"错误: 剧本 '{playbook_name}' 不存在", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

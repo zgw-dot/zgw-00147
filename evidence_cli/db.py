@@ -135,6 +135,23 @@ def init_db(db_path: str) -> None:
                 FOREIGN KEY (run_id) REFERENCES playbook_runs(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS playbook_library (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                batch_no TEXT NOT NULL,
+                description TEXT,
+                operator TEXT,
+                output_file TEXT,
+                playbook_data TEXT NOT NULL,
+                version TEXT NOT NULL DEFAULT '1.0',
+                created_at REAL NOT NULL,
+                modified_at REAL NOT NULL,
+                last_run_id INTEGER,
+                last_run_status TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_playbook_library_batch ON playbook_library(batch_no);
+
             CREATE INDEX IF NOT EXISTS idx_playbook_runs_batch ON playbook_runs(batch_no);
             CREATE INDEX IF NOT EXISTS idx_playbook_steps_run ON playbook_step_logs(run_id);
         """)
@@ -800,3 +817,108 @@ def get_playbook_run_with_steps(
 
         run_data["steps"] = steps
         return run_data
+
+
+def playbook_name_exists(db_path: str, name: str) -> bool:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM playbook_library WHERE name = ?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
+
+def save_playbook_to_library(
+    db_path: str,
+    name: str,
+    batch_no: str,
+    playbook_data: Dict,
+    description: Optional[str] = None,
+    operator: Optional[str] = None,
+    output_file: Optional[str] = None,
+    version: str = "1.0",
+    overwrite: bool = False,
+) -> int:
+    import json as _json
+    now = time.time()
+    data_json = _json.dumps(playbook_data, ensure_ascii=False)
+    with get_conn(db_path) as conn:
+        existing = conn.execute(
+            "SELECT id FROM playbook_library WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if existing:
+            if not overwrite:
+                raise ValueError(f"同名剧本 '{name}' 已存在（使用 --overwrite 覆盖）")
+            conn.execute(
+                """UPDATE playbook_library
+                   SET batch_no=?, description=?, operator=?, output_file=?,
+                       playbook_data=?, version=?, modified_at=?,
+                       last_run_id=NULL, last_run_status=NULL
+                   WHERE name=?""",
+                (batch_no, description, operator, output_file,
+                 data_json, version, now, name),
+            )
+            return existing["id"]
+        cursor = conn.execute(
+            """INSERT INTO playbook_library
+               (name, batch_no, description, operator, output_file,
+                playbook_data, version, created_at, modified_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, batch_no, description, operator, output_file,
+             data_json, version, now, now),
+        )
+        return cursor.lastrowid
+
+
+def get_playbook_from_library(db_path: str, name: str) -> Optional[Dict]:
+    import json as _json
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM playbook_library WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["playbook_data"] = _json.loads(d["playbook_data"])
+        except (_json.JSONDecodeError, TypeError):
+            pass
+        return d
+
+
+def list_playbook_library(
+    db_path: str, batch_no: Optional[str] = None,
+) -> List[Dict]:
+    with get_conn(db_path) as conn:
+        if batch_no:
+            rows = conn.execute(
+                "SELECT * FROM playbook_library WHERE batch_no = ? ORDER BY modified_at DESC",
+                (batch_no,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM playbook_library ORDER BY modified_at DESC",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_playbook_library_last_run(
+    db_path: str, name: str, run_id: int, status: str,
+) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """UPDATE playbook_library SET last_run_id=?, last_run_status=?, modified_at=?
+               WHERE name=?""",
+            (run_id, status, time.time(), name),
+        )
+
+
+def delete_playbook_from_library(db_path: str, name: str) -> bool:
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM playbook_library WHERE name = ?",
+            (name,),
+        )
+        return cursor.rowcount > 0
