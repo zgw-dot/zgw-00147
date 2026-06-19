@@ -1,0 +1,66 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "manual_test",
+    "description": "手动测试批次",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\manual_test_20260620030630\\manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\manual_test_20260620030630\\evidence",
+    "created_at": 1781895992.6306164,
+    "updated_at": 1781895993.7203834
+  },
+  "statistics": {
+    "precheck": {
+      "total": 3,
+      "passed": 0,
+      "failed": 0,
+      "unchecked": 3
+    },
+    "review": {
+      "total": 3,
+      "signed": 1,
+      "supplement": 1,
+      "pending": 1
+    }
+  },
+  "items": [
+    {
+      "id": 1,
+      "file_path": "docs/a.txt",
+      "manifest_line_no": 2,
+      "expected_size": 38,
+      "actual_size": null,
+      "expected_sha256": "099240d2201d96fe4fff9373f9e83aa483188fe5badc5ffe72afbab8d2b1ba24",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "signed",
+      "review_remark": "复核第一条",
+      "reviewed_at": 1781895993.2883625
+    },
+    {
+      "id": 2,
+      "file_path": "docs/b.txt",
+      "manifest_line_no": 3,
+      "expected_size": 42,
+      "actual_size": null,
+      "expected_sha256": "0624a91303b83e731669d3926760a1340874bfa8fc60ce5c9a5050cfe9508e43",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "supplement",
+      "review_remark": "复核第二条",
+      "reviewed_at": 1781895993.7203834
+    },
+    {
+      "id": 3,
+      "file_path": "images/c.png",
+      "manifest_line_no": 4,
+      "expected_size": 41,
+      "actual_size": null,
+      "expected_sha256": "f9d1a058c9c9029b97e79105baa2f07214c822158b903b34d448b58b876a7af9",
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ]
+}

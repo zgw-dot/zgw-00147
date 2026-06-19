@@ -138,7 +138,7 @@ def restore_snapshot(
     snapshot_path: str,
     force: bool = False,
     evidence_dir: Optional[str] = None,
-) -> Tuple[str, int]:
+) -> Tuple[str, int, Dict]:
     """
     从快照恢复批次到数据库。
 
@@ -148,7 +148,7 @@ def restore_snapshot(
         force: 是否强制覆盖已存在的同名批次
         evidence_dir: 重映射证据目录路径（None 则使用快照中的路径）
 
-    返回：(批次号, 证据项数量)
+    返回：(批次号, 证据项数量, 恢复摘要字典)
 
     异常：
         SnapshotConflictError: 批次已存在且未使用 --force
@@ -157,64 +157,59 @@ def restore_snapshot(
         SnapshotVersionError: 版本不兼容
         SnapshotMissingFilesError: 快照引用的清单、证据目录或单个证据文件缺失
     """
-    snapshot = load_snapshot(snapshot_path)
+    preview = preview_restore(
+        db_path=db_path,
+        snapshot_path=snapshot_path,
+        force=force,
+        evidence_dir=evidence_dir,
+    )
 
+    if not preview["can_restore"]:
+        if preview.get("conflict_reason"):
+            raise SnapshotConflictError(preview["conflict_reason"])
+        if preview.get("missing_reason"):
+            raise SnapshotMissingFilesError(preview["missing_reason"])
+
+    snapshot = load_snapshot(snapshot_path)
     batch_data = snapshot["batch"]
     batch_no = batch_data["batch_no"]
     items_data = snapshot["items"]
     review_logs_data = snapshot["review_logs"]
 
-    existing = db.get_batch_by_no(db_path, batch_no)
-    if existing and not force:
-        raise SnapshotConflictError(
-            f"批次 '{batch_no}' 已存在，使用 --force 强制覆盖"
-        )
-
-    if evidence_dir:
-        evidence_dir = os.path.abspath(evidence_dir)
-    else:
-        evidence_dir = batch_data["evidence_dir"]
-
-    manifest_path = batch_data["manifest_path"]
-
-    missing = []
-    if not os.path.isfile(manifest_path):
-        missing.append(f"清单文件: {manifest_path}")
-    if not os.path.isdir(evidence_dir):
-        missing.append(f"证据目录: {evidence_dir}")
-    else:
-        missing_files = []
-        for item in items_data:
-            rel = item.get("file_path")
-            if not rel:
-                continue
-            full = os.path.join(evidence_dir, rel)
-            if not os.path.isfile(full):
-                missing_files.append(f"{rel} (清单第{item.get('manifest_line_no', '?')}行)")
-        if missing_files:
-            missing.append(
-                f"证据文件缺失 {len(missing_files)} 个:\n    "
-                + "\n    ".join(missing_files)
-            )
-    if missing:
-        raise SnapshotMissingFilesError(
-            "快照引用的路径缺失，无法恢复：\n  " + "\n  ".join(missing)
-        )
+    abs_snapshot_path = os.path.abspath(snapshot_path)
+    restore_diff = preview.get("diff")
 
     _restore_batch_with_logs(
         db_path=db_path,
         batch_no=batch_no,
-        manifest_path=manifest_path,
-        evidence_dir=evidence_dir,
+        manifest_path=preview["manifest_path"],
+        evidence_dir=preview["evidence_dir"],
         description=batch_data.get("description"),
         batch_created_at=batch_data.get("created_at"),
         batch_updated_at=batch_data.get("updated_at"),
         items=items_data,
         review_logs=review_logs_data,
         force=force,
+        snapshot_path=abs_snapshot_path,
+        restore_diff=restore_diff,
     )
 
-    return batch_no, len(items_data)
+    summary = {
+        "batch_no": batch_no,
+        "item_count": len(items_data),
+        "restored_from": abs_snapshot_path,
+        "manifest_path": preview["manifest_path"],
+        "evidence_dir": preview["evidence_dir"],
+        "evidence_remapped": preview.get("evidence_remapped", False),
+        "precheck_stats": preview["precheck_stats"],
+        "review_stats": preview["review_stats"],
+        "last_log": preview["last_log"],
+        "was_force": force,
+        "was_conflict": preview["will_conflict"],
+        "diff": restore_diff,
+    }
+
+    return batch_no, len(items_data), summary
 
 
 def _restore_batch_with_logs(
@@ -228,14 +223,22 @@ def _restore_batch_with_logs(
     items: List[Dict],
     review_logs: List[Dict],
     force: bool,
+    snapshot_path: Optional[str] = None,
+    restore_diff: Optional[Dict] = None,
 ) -> int:
     """
     原子恢复批次及其证据项和复核历史。
 
     在单个事务中完成：删除旧批次（如果 force）、创建新批次、插入证据项、插入复核日志。
     任何异常都会回滚，数据库保持不变。
+
+    参数：
+        snapshot_path: 快照文件路径，用于记录恢复来源
+        restore_diff: 新旧批次差异字典，用于记录覆盖恢复的差异
     """
     import sqlite3
+    import json
+    import time
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -249,10 +252,14 @@ def _restore_batch_with_logs(
         if old and force:
             conn.execute("DELETE FROM batches WHERE id = ?", (old["id"],))
 
+        restore_diff_json = json.dumps(restore_diff, ensure_ascii=False) if restore_diff else None
+        restored_at = time.time() if snapshot_path else None
+
         cursor = conn.execute(
             """INSERT INTO batches
-               (batch_no, manifest_path, evidence_dir, description, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (batch_no, manifest_path, evidence_dir, description, created_at, updated_at,
+                restored_from, restored_at, restore_diff)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 batch_no,
                 manifest_path,
@@ -260,6 +267,9 @@ def _restore_batch_with_logs(
                 description,
                 batch_created_at,
                 batch_updated_at,
+                snapshot_path,
+                restored_at,
+                restore_diff_json,
             ),
         )
         new_batch_id = cursor.lastrowid
@@ -325,6 +335,183 @@ def _restore_batch_with_logs(
         raise
     finally:
         conn.close()
+
+
+def preview_restore(
+    db_path: str,
+    snapshot_path: str,
+    force: bool = False,
+    evidence_dir: Optional[str] = None,
+) -> Dict:
+    """
+    预演恢复操作，不修改数据库。
+
+    返回预演摘要，包含：
+    - will_conflict: 是否会冲突
+    - existing_batch: 已存在的批次信息（如果有）
+    - snapshot_batch: 快照中的批次信息
+    - manifest_path: 清单文件路径（映射后）
+    - evidence_dir: 证据目录路径（映射后）
+    - item_count: 证据项数量
+    - precheck_stats: 预检统计 (total, passed, failed, unchecked)
+    - review_stats: 复核统计 (total, signed, supplement, pending)
+    - last_log: 最近一条操作记录
+    - missing_files: 缺失的文件列表
+    - diff: 新旧批次差异（如果 force 且存在旧批次）
+
+    异常同 restore_snapshot。
+    """
+    from . import db as db_mod
+
+    snapshot = load_snapshot(snapshot_path)
+
+    batch_data = snapshot["batch"]
+    batch_no = batch_data["batch_no"]
+    items_data = snapshot["items"]
+    review_logs_data = snapshot["review_logs"]
+
+    result = {
+        "snapshot_path": os.path.abspath(snapshot_path),
+        "batch_no": batch_no,
+        "will_conflict": False,
+        "can_restore": True,
+        "existing_batch": None,
+        "snapshot_batch": batch_data,
+        "manifest_path": None,
+        "evidence_dir": None,
+        "item_count": len(items_data),
+        "precheck_stats": None,
+        "review_stats": None,
+        "last_log": None,
+        "missing_files": [],
+        "diff": None,
+    }
+
+    existing = db_mod.get_batch_by_no(db_path, batch_no)
+    if existing:
+        result["will_conflict"] = True
+        result["existing_batch"] = existing
+        if not force:
+            result["can_restore"] = False
+            result["conflict_reason"] = f"批次 '{batch_no}' 已存在，使用 --force 强制覆盖"
+
+    evidence_remapped = False
+    if evidence_dir:
+        evidence_dir = os.path.abspath(evidence_dir)
+        evidence_remapped = True
+    else:
+        evidence_dir = batch_data["evidence_dir"]
+
+    manifest_path = batch_data["manifest_path"]
+
+    result["manifest_path"] = manifest_path
+    result["evidence_dir"] = evidence_dir
+    result["evidence_remapped"] = evidence_remapped
+
+    missing = []
+    if not os.path.isfile(manifest_path):
+        missing.append(f"清单文件: {manifest_path}")
+    if not os.path.isdir(evidence_dir):
+        missing.append(f"证据目录: {evidence_dir}")
+    else:
+        missing_files = []
+        for item in items_data:
+            rel = item.get("file_path")
+            if not rel:
+                continue
+            full = os.path.join(evidence_dir, rel)
+            if not os.path.isfile(full):
+                missing_files.append(f"{rel} (清单第{item.get('manifest_line_no', '?')}行)")
+        if missing_files:
+            missing.append(
+                f"证据文件缺失 {len(missing_files)} 个:\n    "
+                + "\n    ".join(missing_files)
+            )
+    result["missing_files"] = missing
+    if missing:
+        result["can_restore"] = False
+        result["missing_reason"] = "快照引用的路径缺失，无法恢复：\n  " + "\n  ".join(missing)
+
+    total = len(items_data)
+    passed = sum(1 for i in items_data if i.get("precheck_status") == "passed")
+    failed = sum(1 for i in items_data if i.get("precheck_status") == "failed")
+    unchecked = total - passed - failed
+    result["precheck_stats"] = {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "unchecked": unchecked,
+    }
+
+    signed = sum(1 for i in items_data if i.get("review_status") == "signed")
+    supplement = sum(1 for i in items_data if i.get("review_status") == "supplement")
+    pending = total - signed - supplement
+    result["review_stats"] = {
+        "total": total,
+        "signed": signed,
+        "supplement": supplement,
+        "pending": pending,
+    }
+
+    if review_logs_data:
+        last_log = review_logs_data[-1]
+        result["last_log"] = {
+            "id": last_log.get("id"),
+            "action": last_log.get("action"),
+            "item_id": last_log.get("item_id"),
+            "prev_status": last_log.get("prev_status"),
+            "new_status": last_log.get("new_status"),
+            "operator": last_log.get("operator"),
+            "created_at": last_log.get("created_at"),
+            "file_path": next(
+                (i.get("file_path") for i in items_data if i.get("id") == last_log.get("item_id")),
+                None
+            ),
+        }
+
+    if existing and force:
+        old_items = db_mod.get_evidence_items(db_path, existing["id"])
+        old_total, old_signed, old_supplement, old_pending = db_mod.count_reviewed(
+            db_path, existing["id"]
+        )
+        old_pc_total, old_pc_passed, old_pc_failed, old_pc_unchecked = db_mod.count_precheck(
+            db_path, existing["id"]
+        )
+
+        old_paths = {i["file_path"] for i in old_items}
+        new_paths = {i["file_path"] for i in items_data}
+
+        result["diff"] = {
+            "old_batch": {
+                "description": existing.get("description"),
+                "created_at": existing.get("created_at"),
+                "updated_at": existing.get("updated_at"),
+                "manifest_path": existing.get("manifest_path"),
+                "evidence_dir": existing.get("evidence_dir"),
+            },
+            "new_batch": {
+                "description": batch_data.get("description"),
+                "created_at": batch_data.get("created_at"),
+                "updated_at": batch_data.get("updated_at"),
+                "manifest_path": manifest_path,
+                "evidence_dir": evidence_dir,
+            },
+            "review_stats": {
+                "old": {"total": old_total, "signed": old_signed, "supplement": old_supplement, "pending": old_pending},
+                "new": result["review_stats"],
+            },
+            "precheck_stats": {
+                "old": {"total": old_pc_total, "passed": old_pc_passed, "failed": old_pc_failed, "unchecked": old_pc_unchecked},
+                "new": result["precheck_stats"],
+            },
+            "items": {
+                "only_in_old": sorted(old_paths - new_paths),
+                "only_in_new": sorted(new_paths - old_paths),
+                "in_both": sorted(old_paths & new_paths),
+            },
+        }
+
+    return result
 
 
 def list_snapshots(work_dir: str) -> List[Dict]:

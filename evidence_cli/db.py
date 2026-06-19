@@ -43,7 +43,10 @@ def init_db(db_path: str) -> None:
                 evidence_dir TEXT NOT NULL,
                 description TEXT,
                 created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
+                updated_at REAL NOT NULL,
+                restored_from TEXT,
+                restored_at REAL,
+                restore_diff TEXT
             );
 
             CREATE TABLE IF NOT EXISTS evidence_items (

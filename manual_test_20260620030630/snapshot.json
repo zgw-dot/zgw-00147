@@ -1,0 +1,88 @@
+{
+  "version": "1.0",
+  "snapshot_created_at": 1781895994.6691315,
+  "batch": {
+    "batch_no": "manual_test",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\manual_test_20260620030630\\manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\manual_test_20260620030630\\evidence",
+    "description": "手动测试批次",
+    "created_at": 1781895992.6306164,
+    "updated_at": 1781895993.7203834
+  },
+  "items": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "file_path": "docs/a.txt",
+      "expected_size": 38,
+      "expected_sha256": "099240d2201d96fe4fff9373f9e83aa483188fe5badc5ffe72afbab8d2b1ba24",
+      "manifest_line_no": 2,
+      "actual_size": null,
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "signed",
+      "review_remark": "复核第一条",
+      "reviewed_at": 1781895993.2883625
+    },
+    {
+      "id": 2,
+      "batch_id": 1,
+      "file_path": "docs/b.txt",
+      "expected_size": 42,
+      "expected_sha256": "0624a91303b83e731669d3926760a1340874bfa8fc60ce5c9a5050cfe9508e43",
+      "manifest_line_no": 3,
+      "actual_size": null,
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "supplement",
+      "review_remark": "复核第二条",
+      "reviewed_at": 1781895993.7203834
+    },
+    {
+      "id": 3,
+      "batch_id": 1,
+      "file_path": "images/c.png",
+      "expected_size": 41,
+      "expected_sha256": "f9d1a058c9c9029b97e79105baa2f07214c822158b903b34d448b58b876a7af9",
+      "manifest_line_no": 4,
+      "actual_size": null,
+      "actual_sha256": null,
+      "precheck_status": "unchecked",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "review_logs": [
+    {
+      "id": 2,
+      "batch_id": 1,
+      "item_id": 2,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "supplement",
+      "new_remark": "复核第二条",
+      "action": "review",
+      "operator": "tester",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781895993.7203834,
+      "file_path": "docs/b.txt"
+    },
+    {
+      "id": 1,
+      "batch_id": 1,
+      "item_id": 1,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "signed",
+      "new_remark": "复核第一条",
+      "action": "review",
+      "operator": "tester",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781895993.2883625,
+      "file_path": "docs/a.txt"
+    }
+  ]
+}

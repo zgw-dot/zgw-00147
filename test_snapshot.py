@@ -201,12 +201,17 @@ class TestSnapshot(unittest.TestCase):
         new_db_path = db.get_db_path(new_work_dir)
         db.init_db(new_db_path)
 
-        restored_batch, restored_count = snapshot_mod.restore_snapshot(
+        restored_batch, restored_count, summary = snapshot_mod.restore_snapshot(
             new_db_path, snapshot_path
         )
 
         self.assertEqual(restored_batch, "test_batch")
         self.assertEqual(restored_count, item_count)
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["batch_no"], "test_batch")
+        self.assertEqual(summary["item_count"], item_count)
+        self.assertIn("restored_from", summary)
+        self.assertIn("review_stats", summary)
 
         batch = db.get_batch_by_no(new_db_path, "test_batch")
         self.assertIsNotNone(batch)
@@ -249,11 +254,15 @@ class TestSnapshot(unittest.TestCase):
             self.db_path, batch_id
         )
 
-        restored_batch, count = snapshot_mod.restore_snapshot(
+        restored_batch, count, summary = snapshot_mod.restore_snapshot(
             self.db_path, snapshot_path, force=True
         )
 
         self.assertEqual(restored_batch, "test_batch")
+        self.assertIsNotNone(summary)
+        self.assertTrue(summary["was_force"])
+        self.assertTrue(summary["was_conflict"])
+        self.assertIsNotNone(summary["diff"])
 
         new_batch = db.get_batch_by_no(self.db_path, "test_batch")
         self.assertEqual(new_batch["description"], "旧描述")
@@ -302,12 +311,14 @@ class TestSnapshot(unittest.TestCase):
         new_evidence_dir = os.path.join(self.work_dir, "mapped_evidence")
         shutil.copytree(self.evidence_dir, new_evidence_dir)
 
-        restored_batch, _ = snapshot_mod.restore_snapshot(
+        restored_batch, _, summary = snapshot_mod.restore_snapshot(
             new_db_path,
             snapshot_path,
             force=False,
             evidence_dir=new_evidence_dir,
         )
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["evidence_dir"], os.path.abspath(new_evidence_dir))
 
         batch = db.get_batch_by_no(new_db_path, restored_batch)
         self.assertEqual(batch["evidence_dir"], os.path.abspath(new_evidence_dir))
@@ -328,9 +339,11 @@ class TestSnapshot(unittest.TestCase):
         new_db_path = db.get_db_path(new_work_dir)
         db.init_db(new_db_path)
 
-        snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        _, _, summary = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        self.assertIsNotNone(summary)
 
         new_batch = db.get_batch_by_no(new_db_path, "test_batch")
+        self.assertIsNotNone(new_batch.get("restored_from"))
         logs = db.get_review_history(new_db_path, new_batch["id"], limit=100)
 
         self.assertEqual(len(logs), 3)
@@ -351,9 +364,10 @@ class TestSnapshot(unittest.TestCase):
         new_db_path = db.get_db_path(new_work_dir)
         db.init_db(new_db_path)
 
-        snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        _, _, _ = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
 
         new_batch = db.get_batch_by_no(new_db_path, "test_batch")
+        self.assertIsNotNone(new_batch.get("restored_from"))
         items = db.get_evidence_items(new_db_path, new_batch["id"])
 
         pending_items = [i for i in items if i["review_status"] == "pending"]
@@ -389,9 +403,10 @@ class TestSnapshot(unittest.TestCase):
         new_db_path = db.get_db_path(new_work_dir)
         db.init_db(new_db_path)
 
-        snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        _, _, _ = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
 
         new_batch = db.get_batch_by_no(new_db_path, "test_batch")
+        self.assertIsNotNone(new_batch.get("restored_from"))
 
         undo_result = db.undo_last_review(new_db_path, new_batch["id"], operator="tester2")
 
@@ -413,9 +428,10 @@ class TestSnapshot(unittest.TestCase):
         new_db_path = db.get_db_path(new_work_dir)
         db.init_db(new_db_path)
 
-        snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        _, _, _ = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
 
         new_batch = db.get_batch_by_no(new_db_path, "test_batch")
+        self.assertIsNotNone(new_batch.get("restored_from"))
         items = db.get_evidence_items(new_db_path, new_batch["id"])
 
         export_path = os.path.join(self.work_dir, "export.json")
@@ -579,13 +595,14 @@ class TestSnapshot(unittest.TestCase):
         _, _, _ = self._create_isolated_fixture(remap_fixture)
         shutil.move(os.path.join(remap_fixture, "evidence"), remapped_dir)
 
-        restored_batch, count = snapshot_mod.restore_snapshot(
+        restored_batch, count, summary = snapshot_mod.restore_snapshot(
             new_db_path,
             snapshot_path,
             evidence_dir=remapped_dir,
         )
         self.assertEqual(restored_batch, "iso_remap")
         self.assertGreater(count, 0)
+        self.assertIsNotNone(summary)
 
         new_batch = db.get_batch_by_no(new_db_path, restored_batch)
         self.assertEqual(new_batch["evidence_dir"], os.path.abspath(remapped_dir))
@@ -604,9 +621,10 @@ class TestSnapshot(unittest.TestCase):
         new_db_path = db.get_db_path(new_work_dir)
         db.init_db(new_db_path)
 
-        restored_batch, count = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        restored_batch, count, summary = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
         self.assertEqual(restored_batch, "iso_normal")
         self.assertEqual(count, 3)
+        self.assertIsNotNone(summary)
 
         new_batch = db.get_batch_by_no(new_db_path, restored_batch)
         items = db.get_evidence_items(new_db_path, new_batch["id"])
@@ -715,13 +733,14 @@ class TestSnapshot(unittest.TestCase):
 
         intact = os.path.join(self.work_dir, "remap_fixture_intact")
         _, intact_dir, _ = self._create_isolated_fixture(intact)
-        restored_batch, count = snapshot_mod.restore_snapshot(
+        restored_batch, count, summary = snapshot_mod.restore_snapshot(
             new_db_path,
             snapshot_path,
             evidence_dir=intact_dir,
         )
         self.assertEqual(restored_batch, "iso_remap_miss")
         self.assertGreater(count, 0)
+        self.assertIsNotNone(summary)
 
         new_batch = db.get_batch_by_no(new_db_path, restored_batch)
         items = db.get_evidence_items(new_db_path, new_batch["id"])
@@ -752,6 +771,406 @@ class TestSnapshot(unittest.TestCase):
         )
         self.assertGreater(c, 0)
         self.assertTrue(os.path.exists(export_path))
+
+    def test_preview_restore_basic(self):
+        """测试预演恢复基本信息"""
+        batch_id, item_count = self._import_batch()
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "test_snapshot.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "preview_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        preview = snapshot_mod.preview_restore(
+            new_db_path, snapshot_path, force=False
+        )
+
+        self.assertEqual(preview["batch_no"], "test_batch")
+        self.assertEqual(preview["item_count"], item_count)
+        self.assertEqual(preview["will_conflict"], False)
+        self.assertEqual(preview["can_restore"], True)
+        self.assertIsNotNone(preview["manifest_path"])
+        self.assertIsNotNone(preview["evidence_dir"])
+        self.assertIsNotNone(preview["precheck_stats"])
+        self.assertIsNotNone(preview["review_stats"])
+        self.assertIsNotNone(preview["last_log"])
+        self.assertEqual(preview["precheck_stats"]["total"], item_count)
+        self.assertEqual(preview["review_stats"]["total"], item_count)
+
+        batches_after = db.list_batches(new_db_path)
+        self.assertEqual(len(batches_after), 0)
+
+    def test_preview_restore_conflict(self):
+        """测试预演时检测到冲突"""
+        self._import_batch(description="已存在批次")
+
+        batch_id2, _, _, _, _ = self._import_batch_isolated("test_batch", "快照批次")
+        self._review_some_items(batch_id2)
+        snapshot_path = os.path.join(self.work_dir, "conflict_snap.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        preview = snapshot_mod.preview_restore(
+            self.db_path, snapshot_path, force=False
+        )
+
+        self.assertEqual(preview["will_conflict"], True)
+        self.assertEqual(preview["can_restore"], False)
+        self.assertIn("conflict_reason", preview)
+        self.assertIsNotNone(preview["existing_batch"])
+
+    def test_preview_restore_force_with_diff(self):
+        """测试预演强制覆盖时的差异计算"""
+        batch_id, _ = self._import_batch(description="测试批次")
+        self._review_some_items(batch_id)
+
+        snapshot_path_old = os.path.join(self.work_dir, "snap_old.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path_old)
+
+        items = db.get_evidence_items(self.db_path, batch_id)
+        db.review_item(
+            self.db_path,
+            batch_id=batch_id,
+            item_id=items[0]["id"],
+            new_status="supplement",
+            remark="后续新增的复核",
+            operator="later_op",
+            action="review",
+        )
+
+        preview = snapshot_mod.preview_restore(
+            self.db_path, snapshot_path_old, force=True
+        )
+
+        self.assertEqual(preview["will_conflict"], True)
+        self.assertEqual(preview["can_restore"], True)
+        self.assertIsNotNone(preview["diff"])
+        self.assertIn("old_batch", preview["diff"])
+        self.assertIn("new_batch", preview["diff"])
+        self.assertIn("review_stats", preview["diff"])
+        self.assertIn("precheck_stats", preview["diff"])
+        self.assertIn("items", preview["diff"])
+
+        old_rv = preview["diff"]["review_stats"]["old"]
+        new_rv = preview["diff"]["review_stats"]["new"]
+        self.assertEqual(old_rv["signed"], 0)
+        self.assertEqual(old_rv["supplement"], 2)
+        self.assertEqual(new_rv["signed"], 1)
+        self.assertEqual(new_rv["supplement"], 1)
+
+    def test_restore_summary_persisted(self):
+        """测试恢复摘要持久化到数据库"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "test_snapshot.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "persist_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        restored_batch, _, summary = snapshot_mod.restore_snapshot(
+            new_db_path, snapshot_path
+        )
+
+        batch = db.get_batch_by_no(new_db_path, restored_batch)
+        self.assertIsNotNone(batch.get("restored_from"))
+        self.assertIsNotNone(batch.get("restored_at"))
+        self.assertEqual(batch["restored_from"], os.path.abspath(snapshot_path))
+        self.assertIsNone(batch.get("restore_diff"))
+
+        batches = db.list_batches(new_db_path)
+        self.assertEqual(len(batches), 1)
+        self.assertIsNotNone(batches[0].get("restored_from"))
+
+    def test_restore_force_diff_persisted(self):
+        """测试覆盖恢复时差异持久化"""
+        old_batch_id, _ = self._import_batch(description="旧描述")
+        self._review_some_items(old_batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "test_snapshot.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        db.review_item(
+            self.db_path,
+            batch_id=old_batch_id,
+            item_id=db.get_evidence_items(self.db_path, old_batch_id)[0]["id"],
+            new_status="supplement",
+            remark="恢复前的修改",
+            operator="someone",
+            action="review",
+        )
+
+        restored_batch, _, summary = snapshot_mod.restore_snapshot(
+            self.db_path, snapshot_path, force=True
+        )
+
+        self.assertTrue(summary["was_force"])
+        self.assertTrue(summary["was_conflict"])
+        self.assertIsNotNone(summary["diff"])
+
+        batch = db.get_batch_by_no(self.db_path, restored_batch)
+        self.assertIsNotNone(batch.get("restored_from"))
+        self.assertIsNotNone(batch.get("restore_diff"))
+
+        import json
+        diff = json.loads(batch["restore_diff"])
+        self.assertIn("old_batch", diff)
+        self.assertIn("review_stats", diff)
+
+    def test_restore_then_review_updates_stats(self):
+        """测试恢复后继续复核，统计正确更新"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "test_snapshot.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "review_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        _, _, summary = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        batch = db.get_batch_by_no(new_db_path, "test_batch")
+
+        before_total, before_signed, before_supp, before_pending = db.count_reviewed(
+            new_db_path, batch["id"]
+        )
+
+        items = db.get_evidence_items(new_db_path, batch["id"])
+        pending_items = [i for i in items if i["review_status"] == "pending"]
+        self.assertGreater(len(pending_items), 0)
+
+        db.review_item(
+            new_db_path,
+            batch_id=batch["id"],
+            item_id=pending_items[0]["id"],
+            new_status="signed",
+            remark="恢复后新增",
+            operator="new_op",
+            action="review",
+        )
+
+        after_total, after_signed, after_supp, after_pending = db.count_reviewed(
+            new_db_path, batch["id"]
+        )
+
+        self.assertEqual(after_total, before_total)
+        self.assertEqual(after_signed, before_signed + 1)
+        self.assertEqual(after_pending, before_pending - 1)
+
+        history = db.get_review_history(new_db_path, batch["id"], limit=1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["new_status"], "signed")
+        self.assertEqual(history[0]["new_remark"], "恢复后新增")
+
+    def test_restore_then_undo_rollback(self):
+        """测试恢复后执行撤销，统计正确回滚"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "test_snapshot.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "undo_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        _, _, _ = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        batch = db.get_batch_by_no(new_db_path, "test_batch")
+
+        before_total, before_signed, before_supp, before_pending = db.count_reviewed(
+            new_db_path, batch["id"]
+        )
+        before_history = db.get_review_history(new_db_path, batch["id"], limit=100)
+
+        undo_result = db.undo_last_review(new_db_path, batch["id"], operator="undo_op")
+        self.assertIsNotNone(undo_result)
+
+        after_total, after_signed, after_supp, after_pending = db.count_reviewed(
+            new_db_path, batch["id"]
+        )
+        after_history = db.get_review_history(new_db_path, batch["id"], limit=100)
+
+        self.assertEqual(after_total, before_total)
+        self.assertEqual(len(after_history), len(before_history) + 1)
+
+        if undo_result["new_status"] == "signed":
+            self.assertEqual(after_signed, before_signed - 1)
+        elif undo_result["new_status"] == "supplement":
+            self.assertEqual(after_supp, before_supp - 1)
+
+    def test_restore_cross_process_consistency(self):
+        """测试跨进程数据一致性（重新连接数据库验证）"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "cross_snap.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "cross_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        _, _, _ = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+
+        db2_path = db.get_db_path(new_work_dir)
+        batch = db.get_batch_by_no(db2_path, "test_batch")
+        self.assertIsNotNone(batch)
+        self.assertIsNotNone(batch.get("restored_from"))
+
+        total, signed, supp, pending = db.count_reviewed(db2_path, batch["id"])
+        self.assertGreater(total, 0)
+
+        items = db.get_evidence_items(db2_path, batch["id"])
+        self.assertEqual(len(items), total)
+
+        history = db.get_review_history(db2_path, batch["id"], limit=100)
+        self.assertGreater(len(history), 0)
+
+        batches = db.list_batches(db2_path)
+        self.assertEqual(len(batches), 1)
+        self.assertIsNotNone(batches[0].get("restored_from"))
+
+    def test_preview_does_not_modify_db(self):
+        """测试预演不会修改数据库"""
+        batch_id, _ = self._import_batch(description="保持不变")
+        self._review_some_items(batch_id)
+
+        before_batch = db.get_batch_by_no(self.db_path, "test_batch")
+        before_items = db.get_evidence_items(self.db_path, batch_id)
+        before_history = db.get_review_history(self.db_path, batch_id, limit=100)
+        before_total, before_signed, before_supp, before_pending = db.count_reviewed(
+            self.db_path, batch_id
+        )
+
+        new_batch_id, _, _, _, _ = self._import_batch_isolated("iso_preview", "隔离批次")
+        snapshot_path = os.path.join(self.work_dir, "preview_snap.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_preview", snapshot_path)
+
+        preview = snapshot_mod.preview_restore(
+            self.db_path, snapshot_path, force=False
+        )
+        self.assertEqual(preview["batch_no"], "iso_preview")
+        self.assertEqual(preview["will_conflict"], True)
+        self.assertEqual(preview["can_restore"], False)
+
+        after_batch = db.get_batch_by_no(self.db_path, "test_batch")
+        after_items = db.get_evidence_items(self.db_path, batch_id)
+        after_history = db.get_review_history(self.db_path, batch_id, limit=100)
+        after_total, after_signed, after_supp, after_pending = db.count_reviewed(
+            self.db_path, batch_id
+        )
+
+        self.assertEqual(before_batch["description"], after_batch["description"])
+        self.assertEqual(len(before_items), len(after_items))
+        self.assertEqual(len(before_history), len(after_history))
+        self.assertEqual(before_total, after_total)
+        self.assertEqual(before_signed, after_signed)
+        self.assertEqual(before_supp, after_supp)
+        self.assertEqual(before_pending, after_pending)
+
+        iso_batch = db.get_batch_by_no(self.db_path, "iso_preview")
+        self.assertIsNotNone(iso_batch)
+
+    def test_restore_failure_atomicity(self):
+        """测试恢复失败时数据库保持原子性（无半截数据）"""
+        keep_id, _, _, _, _ = self._import_batch_isolated("keep_me", "保留批次")
+        db.review_item(
+            self.db_path,
+            batch_id=keep_id,
+            item_id=db.get_evidence_items(self.db_path, keep_id)[0]["id"],
+            new_status="signed",
+            remark="原始复核",
+            operator="orig_op",
+            action="review",
+        )
+
+        snap_id, _, orig_manifest, orig_evidence, _ = self._import_batch_isolated(
+            "to_restore", "待恢复批次"
+        )
+        snapshot_path = os.path.join(self.work_dir, "atomic_snap.json")
+        snapshot_mod.save_snapshot(self.db_path, "to_restore", snapshot_path)
+
+        os.remove(orig_manifest)
+
+        before_keep = db.get_batch_by_no(self.db_path, "keep_me")
+        before_keep_total, before_keep_signed, _, _ = db.count_reviewed(
+            self.db_path, keep_id
+        )
+        before_snap = db.get_batch_by_no(self.db_path, "to_restore")
+        before_batches = db.list_batches(self.db_path)
+
+        try:
+            snapshot_mod.restore_snapshot(
+                self.db_path, snapshot_path, force=True
+            )
+            self.fail("应该抛出异常")
+        except snapshot_mod.SnapshotMissingFilesError:
+            pass
+
+        after_keep = db.get_batch_by_no(self.db_path, "keep_me")
+        after_keep_total, after_keep_signed, _, _ = db.count_reviewed(
+            self.db_path, keep_id
+        )
+        after_snap = db.get_batch_by_no(self.db_path, "to_restore")
+        after_batches = db.list_batches(self.db_path)
+
+        self.assertEqual(before_keep["description"], after_keep["description"])
+        self.assertEqual(before_keep_total, after_keep_total)
+        self.assertEqual(before_keep_signed, after_keep_signed)
+        self.assertEqual(before_snap["description"], after_snap["description"])
+        self.assertEqual(len(before_batches), len(after_batches))
+
+    def test_export_includes_restore_summary(self):
+        """测试导出报告包含恢复摘要"""
+        from evidence_cli import report as report_mod
+        import json
+
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "test_snapshot.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "export_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        _, _, _ = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+
+        batch = db.get_batch_by_no(new_db_path, "test_batch")
+        items = db.get_evidence_items(new_db_path, batch["id"])
+
+        export_path = os.path.join(new_work_dir, "export_with_restore.json")
+        total_pc, passed, failed, unchecked = db.count_precheck(new_db_path, batch["id"])
+        total_rv, signed, supplement, pending = db.count_reviewed(new_db_path, batch["id"])
+        report_mod.export_json(
+            items,
+            export_path,
+            batch_info=batch,
+            precheck_stats={"total": total_pc, "passed": passed, "failed": failed, "unchecked": unchecked},
+            review_stats={"total": total_rv, "signed": signed, "supplement": supplement, "pending": pending},
+        )
+
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+
+        self.assertIn("restore", export_data["batch"])
+        self.assertEqual(
+            export_data["batch"]["restore"]["restored_from"],
+            os.path.abspath(snapshot_path)
+        )
+        self.assertIn("restored_at", export_data["batch"]["restore"])
 
 
 if __name__ == "__main__":

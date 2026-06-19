@@ -73,8 +73,10 @@ def export_json(items: List[Dict], output_path: str, batch_info: Dict = None,
     """
     导出 JSON 报告。
 
-    包含：批次信息、统计信息、证据项列表、复核历史摘要
+    包含：批次信息、统计信息、证据项列表、复核历史摘要、恢复摘要（如果有）
     """
+    import json as _json
+
     report = {
         "version": "1.0",
         "batch": {},
@@ -91,6 +93,17 @@ def export_json(items: List[Dict], output_path: str, batch_info: Dict = None,
             "created_at": batch_info.get("created_at", 0),
             "updated_at": batch_info.get("updated_at", 0),
         }
+        if batch_info.get("restored_from"):
+            restore_info = {
+                "restored_from": batch_info.get("restored_from"),
+                "restored_at": batch_info.get("restored_at"),
+            }
+            if batch_info.get("restore_diff"):
+                try:
+                    restore_info["diff"] = _json.loads(batch_info["restore_diff"])
+                except (_json.JSONDecodeError, TypeError):
+                    restore_info["diff"] = batch_info["restore_diff"]
+            report["batch"]["restore"] = restore_info
 
     if precheck_stats:
         report["statistics"]["precheck"] = precheck_stats
