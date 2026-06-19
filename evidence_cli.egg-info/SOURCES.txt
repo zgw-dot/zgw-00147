@@ -5,6 +5,7 @@ evidence_cli/db.py
 evidence_cli/manifest.py
 evidence_cli/precheck.py
 evidence_cli/report.py
+evidence_cli/snapshot.py
 evidence_cli.egg-info/PKG-INFO
 evidence_cli.egg-info/SOURCES.txt
 evidence_cli.egg-info/dependency_links.txt

@@ -9,6 +9,7 @@ from . import db
 from . import manifest as manifest_mod
 from . import precheck as precheck_mod
 from . import report as report_mod
+from . import snapshot as snapshot_mod
 
 
 STATUS_LABELS = {
@@ -462,6 +463,142 @@ def status(ctx, batch_no, filter_status, limit):
 
     if len(items) > limit:
         click.echo(f"  ... 还有 {len(items) - limit} 条")
+
+
+@main.group()
+@click.pass_context
+def snapshot(ctx):
+    """批次状态快照管理：保存、列出、恢复"""
+    pass
+
+
+@snapshot.command("save")
+@click.option("--batch", "-b", "batch_no", required=True, help="批次编号")
+@click.option("--output", "-o", "output_path", default=None,
+              help="快照输出文件路径（默认保存到 .snapshots 目录）")
+@click.option("--name", "-n", "snapshot_name", default=None,
+              help="快照名称（保存到 .snapshots 目录时使用）")
+@click.pass_context
+def snapshot_save(ctx, batch_no, output_path, snapshot_name):
+    """保存批次状态快照"""
+    db_path = ensure_db(ctx)
+    work_dir = ctx.obj["work_dir"]
+
+    batch = get_batch_or_exit(db_path, batch_no)
+
+    if output_path is None:
+        if snapshot_name is None:
+            import time
+            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime("%Y%m%d_%H%M%S")
+            snapshot_name = f"{batch_no}_{timestamp}"
+        output_path = snapshot_mod.get_snapshot_path(work_dir, snapshot_name)
+
+    output_path = os.path.abspath(output_path)
+
+    try:
+        snapshot_data = snapshot_mod.save_snapshot(db_path, batch_no, output_path)
+    except snapshot_mod.SnapshotNotFoundError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    item_count = len(snapshot_data["items"])
+    log_count = len(snapshot_data["review_logs"])
+
+    click.echo(f"快照已保存: {output_path}")
+    click.echo(f"  批次: {batch_no}")
+    click.echo(f"  证据项: {item_count} 条")
+    click.echo(f"  复核记录: {log_count} 条")
+
+
+@snapshot.command("list")
+@click.pass_context
+def snapshot_list(ctx):
+    """列出所有快照"""
+    work_dir = ctx.obj["work_dir"]
+
+    snapshots = snapshot_mod.list_snapshots(work_dir)
+
+    if not snapshots:
+        click.echo("暂无快照")
+        return
+
+    click.echo(f"共 {len(snapshots)} 个快照:")
+    click.echo("")
+    for s in snapshots:
+        size_str = _format_size(s["size"])
+        created_str = format_time(s["created_at"])
+        click.echo(f"  {s['name']}")
+        click.echo(f"    批次: {s['batch_no']}  大小: {size_str}  创建: {created_str}")
+
+
+def _format_size(size_bytes: int) -> str:
+    """格式化文件大小"""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+
+@snapshot.command("restore")
+@click.option("--snapshot", "-s", "snapshot_path", required=True,
+              type=click.Path(dir_okay=False), help="快照文件路径或名称")
+@click.option("--force", "-f", is_flag=True, help="强制覆盖已存在的同名批次")
+@click.option("--evidence-dir", "-e", "evidence_dir", default=None,
+              type=click.Path(file_okay=False), help="重映射证据目录路径")
+@click.option("--work-dir", "-w", "target_work_dir", default=None,
+              type=click.Path(file_okay=False, dir_okay=True),
+              help="目标工作目录（默认使用当前工作目录）")
+@click.pass_context
+def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir):
+    """从快照恢复批次到数据库"""
+    work_dir = ctx.obj["work_dir"]
+
+    if not os.path.isabs(snapshot_path) and not os.path.exists(snapshot_path):
+        candidate = snapshot_mod.get_snapshot_path(work_dir, snapshot_path)
+        if os.path.exists(candidate):
+            snapshot_path = candidate
+
+    snapshot_path = os.path.abspath(snapshot_path)
+
+    if target_work_dir:
+        target_work_dir = os.path.abspath(target_work_dir)
+        target_db_path = db.get_db_path(target_work_dir)
+        if not os.path.exists(target_db_path):
+            db.init_db(target_db_path)
+    else:
+        target_db_path = ensure_db(ctx)
+        target_work_dir = work_dir
+
+    if evidence_dir:
+        evidence_dir = os.path.abspath(evidence_dir)
+
+    try:
+        batch_no, item_count = snapshot_mod.restore_snapshot(
+            db_path=target_db_path,
+            snapshot_path=snapshot_path,
+            force=force,
+            evidence_dir=evidence_dir,
+        )
+    except snapshot_mod.SnapshotNotFoundError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except snapshot_mod.SnapshotFormatError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except snapshot_mod.SnapshotVersionError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except snapshot_mod.SnapshotConflictError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"批次已恢复: {batch_no}")
+    click.echo(f"  目标数据库: {target_db_path}")
+    click.echo(f"  证据项: {item_count} 条")
+    if evidence_dir:
+        click.echo(f"  证据目录(重映射): {evidence_dir}")
 
 
 if __name__ == "__main__":
