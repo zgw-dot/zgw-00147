@@ -138,6 +138,7 @@ def restore_snapshot(
     snapshot_path: str,
     force: bool = False,
     evidence_dir: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> Tuple[str, int, Dict]:
     """
     从快照恢复批次到数据库。
@@ -147,6 +148,7 @@ def restore_snapshot(
         snapshot_path: 快照文件路径
         force: 是否强制覆盖已存在的同名批次
         evidence_dir: 重映射证据目录路径（None 则使用快照中的路径）
+        operator: 操作人（可选，写入恢复事件）
 
     返回：(批次号, 证据项数量, 恢复摘要字典)
 
@@ -178,6 +180,10 @@ def restore_snapshot(
 
     abs_snapshot_path = os.path.abspath(snapshot_path)
     restore_diff = preview.get("diff")
+    snapshot_created_at = snapshot.get("snapshot_created_at")
+
+    evidence_dir_before = batch_data.get("evidence_dir")
+    manifest_path_before = batch_data.get("manifest_path")
 
     _restore_batch_with_logs(
         db_path=db_path,
@@ -192,6 +198,10 @@ def restore_snapshot(
         force=force,
         snapshot_path=abs_snapshot_path,
         restore_diff=restore_diff,
+        snapshot_created_at=snapshot_created_at,
+        evidence_dir_before=evidence_dir_before,
+        manifest_path_before=manifest_path_before,
+        operator=operator,
     )
 
     summary = {
@@ -225,20 +235,29 @@ def _restore_batch_with_logs(
     force: bool,
     snapshot_path: Optional[str] = None,
     restore_diff: Optional[Dict] = None,
+    snapshot_created_at: Optional[float] = None,
+    evidence_dir_before: Optional[str] = None,
+    manifest_path_before: Optional[str] = None,
+    operator: Optional[str] = None,
 ) -> int:
     """
-    原子恢复批次及其证据项和复核历史。
+    原子恢复批次及其证据项、复核历史、恢复事件链路。
 
-    在单个事务中完成：删除旧批次（如果 force）、创建新批次、插入证据项、插入复核日志。
+    在单个事务中完成：
+      1. 捕获旧批次状态（用于父事件关联和旧快照存档）
+      2. 删除旧批次（如果 force）
+      3. 创建新批次
+      4. 插入证据项
+      5. 插入复核日志
+      6. 插入 restore_events 事件并回写 batches.last_restore_event_id
+
     任何异常都会回滚，数据库保持不变。
-
-    参数：
-        snapshot_path: 快照文件路径，用于记录恢复来源
-        restore_diff: 新旧批次差异字典，用于记录覆盖恢复的差异
     """
     import sqlite3
     import json
     import time
+
+    from . import db as db_mod
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -246,14 +265,77 @@ def _restore_batch_with_logs(
 
     try:
         old = conn.execute(
-            "SELECT id FROM batches WHERE batch_no = ?",
+            "SELECT * FROM batches WHERE batch_no = ?",
             (batch_no,),
         ).fetchone()
+
+        parent_restore_event_id = None
+        old_batch_snapshot_json = None
+
         if old and force:
-            conn.execute("DELETE FROM batches WHERE id = ?", (old["id"],))
+            old_dict = dict(old)
+            parent_restore_event_id = old_dict.get("last_restore_event_id")
+
+            old_items_rows = conn.execute(
+                "SELECT * FROM evidence_items WHERE batch_id = ?",
+                (old["id"],),
+            ).fetchall()
+            old_logs_rows = conn.execute(
+                "SELECT * FROM review_logs WHERE batch_id = ?",
+                (old["id"],),
+            ).fetchall()
+            old_review_stats = db_mod.count_reviewed.__wrapped__(conn, old["id"]) if hasattr(
+                db_mod.count_reviewed, "__wrapped__"
+            ) else None
+            if old_review_stats is None:
+                ot = conn.execute(
+                    "SELECT COUNT(*) FROM evidence_items WHERE batch_id = ?",
+                    (old["id"],),
+                ).fetchone()[0]
+                os_ = conn.execute(
+                    "SELECT COUNT(*) FROM evidence_items WHERE batch_id = ? AND review_status = 'signed'",
+                    (old["id"],),
+                ).fetchone()[0]
+                osupp = conn.execute(
+                    "SELECT COUNT(*) FROM evidence_items WHERE batch_id = ? AND review_status = 'supplement'",
+                    (old["id"],),
+                ).fetchone()[0]
+                old_review_stats = (ot, os_, osupp, ot - os_ - osupp)
+
+            old_batch_snapshot = {
+                "batch": {
+                    "id": old_dict.get("id"),
+                    "batch_no": old_dict.get("batch_no"),
+                    "manifest_path": old_dict.get("manifest_path"),
+                    "evidence_dir": old_dict.get("evidence_dir"),
+                    "description": old_dict.get("description"),
+                    "created_at": old_dict.get("created_at"),
+                    "updated_at": old_dict.get("updated_at"),
+                    "restored_from": old_dict.get("restored_from"),
+                    "restored_at": old_dict.get("restored_at"),
+                    "last_restore_event_id": old_dict.get("last_restore_event_id"),
+                },
+                "review_stats": {
+                    "total": old_review_stats[0],
+                    "signed": old_review_stats[1],
+                    "supplement": old_review_stats[2],
+                    "pending": old_review_stats[3],
+                },
+                "item_count": len(old_items_rows),
+                "review_log_count": len(old_logs_rows),
+            }
+            old_batch_snapshot_json = json.dumps(old_batch_snapshot, ensure_ascii=False)
 
         restore_diff_json = json.dumps(restore_diff, ensure_ascii=False) if restore_diff else None
         restored_at = time.time() if snapshot_path else None
+
+        old_batch_id_for_cleanup = None
+        if old and force:
+            old_batch_id_for_cleanup = old["id"]
+            conn.execute(
+                "UPDATE batches SET batch_no = ? WHERE id = ?",
+                (f"__old_{old['id']}_{int(time.time()*1000)}", old["id"]),
+            )
 
         cursor = conn.execute(
             """INSERT INTO batches
@@ -273,6 +355,13 @@ def _restore_batch_with_logs(
             ),
         )
         new_batch_id = cursor.lastrowid
+
+        if old_batch_id_for_cleanup is not None:
+            conn.execute(
+                "UPDATE restore_events SET batch_id = ? WHERE batch_id = ?",
+                (new_batch_id, old_batch_id_for_cleanup),
+            )
+            conn.execute("DELETE FROM batches WHERE id = ?", (old_batch_id_for_cleanup,))
 
         item_id_map = {}
         for item in items:
@@ -326,6 +415,26 @@ def _restore_batch_with_logs(
                 ),
             )
             log_id_map[log["id"]] = log_cursor.lastrowid
+
+        if snapshot_path and restored_at is not None:
+            db_mod._insert_restore_event_with_conn(
+                conn,
+                batch_id=new_batch_id,
+                batch_no=batch_no,
+                snapshot_path=snapshot_path,
+                snapshot_created_at=snapshot_created_at,
+                parent_restore_event_id=parent_restore_event_id,
+                restored_at=restored_at,
+                was_force=force,
+                was_remapped=(evidence_dir_before is not None and evidence_dir_before != evidence_dir),
+                evidence_dir_before=evidence_dir_before,
+                evidence_dir_after=evidence_dir,
+                manifest_path_before=manifest_path_before,
+                manifest_path_after=manifest_path,
+                old_batch_snapshot=old_batch_snapshot_json,
+                restore_diff=restore_diff_json,
+                operator=operator,
+            )
 
         conn.commit()
         return new_batch_id
@@ -558,3 +667,150 @@ def list_snapshots(work_dir: str) -> List[Dict]:
 
     snapshots.sort(key=lambda s: s["created_at"], reverse=True)
     return snapshots
+
+
+def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
+    """
+    构建批次的完整恢复链路追踪信息。
+
+    返回 None 表示批次不存在。
+    返回结构：
+        {
+            "batch_no": str,
+            "batch_id": int,
+            "batch": dict,  # 完整批次记录
+            "events": [     # 按时间顺序（从最早到最近）的恢复事件
+                {
+                    "event_id": int,
+                    "restored_at": float,
+                    "snapshot_path": str,
+                    "snapshot_exists": bool,
+                    "snapshot_created_at": Optional[float],
+                    "parent_event_id": Optional[int],
+                    "was_force": bool,
+                    "was_remapped": bool,
+                    "evidence_dir_before": Optional[str],
+                    "evidence_dir_after": str,
+                    "manifest_path_before": Optional[str],
+                    "manifest_path_after": str,
+                    "old_batch_snapshot": Optional[Dict],  # 已反序列化
+                    "restore_diff": Optional[Dict],         # 已反序列化
+                    "operator": Optional[str],
+                    "chain_ok": bool,
+                    "warnings": List[str],
+                },
+                ...
+            ],
+            "post_restore_activity": List[Dict],  # 最近一次恢复后的复核/撤销记录
+            "modified_after_restore": bool,
+            "warnings": List[str],
+            "has_restore_chain": bool,
+        }
+    """
+    import json
+    from . import db as db_mod
+
+    batch = db_mod.get_batch_by_no(db_path, batch_no)
+    if not batch:
+        return None
+
+    batch_id = batch["id"]
+    events_raw = db_mod.get_restore_events_for_batch(db_path, batch_no=batch_no)
+
+    has_chain = len(events_raw) > 0
+    warnings: List[str] = []
+    events: List[Dict] = []
+
+    event_by_id = {e["id"]: e for e in events_raw}
+
+    last_restored_at = None
+
+    for e in events_raw:
+        ev_warnings: List[str] = []
+
+        snapshot_exists = os.path.isfile(e["snapshot_path"])
+        if not snapshot_exists:
+            ev_warnings.append("快照源文件已不存在")
+
+        chain_ok = True
+        if e.get("parent_restore_event_id") is not None:
+            parent_id = e["parent_restore_event_id"]
+            if parent_id not in event_by_id:
+                chain_ok = False
+                ev_warnings.append(
+                    f"父恢复事件 #{parent_id} 未找到，恢复链路可能断档（可能该批次从外部恢复而来）"
+                )
+
+        old_batch_snapshot = None
+        if e.get("old_batch_snapshot"):
+            try:
+                old_batch_snapshot = json.loads(e["old_batch_snapshot"])
+            except (json.JSONDecodeError, TypeError):
+                ev_warnings.append("旧批次存档数据损坏，无法解析")
+
+        restore_diff = None
+        if e.get("restore_diff"):
+            try:
+                restore_diff = json.loads(e["restore_diff"])
+            except (json.JSONDecodeError, TypeError):
+                ev_warnings.append("恢复差异数据损坏，无法解析")
+
+        events.append({
+            "event_id": e["id"],
+            "restored_at": e["restored_at"],
+            "snapshot_path": e["snapshot_path"],
+            "snapshot_exists": snapshot_exists,
+            "snapshot_created_at": e.get("snapshot_created_at"),
+            "parent_event_id": e.get("parent_restore_event_id"),
+            "was_force": e["was_force"],
+            "was_remapped": e["was_remapped"],
+            "evidence_dir_before": e.get("evidence_dir_before"),
+            "evidence_dir_after": e["evidence_dir_after"],
+            "manifest_path_before": e.get("manifest_path_before"),
+            "manifest_path_after": e["manifest_path_after"],
+            "old_batch_snapshot": old_batch_snapshot,
+            "restore_diff": restore_diff,
+            "operator": e.get("operator"),
+            "chain_ok": chain_ok,
+            "warnings": ev_warnings,
+        })
+
+        last_restored_at = e["restored_at"]
+
+    post_activity: List[Dict] = []
+    modified_after = False
+    if last_restored_at is not None:
+        post_activity = db_mod.get_review_logs_after_time(
+            db_path, batch_id, last_restored_at
+        )
+        modified_after = len(post_activity) > 0
+
+    if modified_after:
+        warnings.append(
+            f"该批次在最近一次恢复后有 {len(post_activity)} 条新的复核/撤销操作"
+        )
+
+    if has_chain:
+        if not all(ev["chain_ok"] for ev in events):
+            warnings.append("恢复链路存在断档，部分历史可能不可追溯")
+        missing_count = sum(1 for ev in events if not ev["snapshot_exists"])
+        if missing_count > 0:
+            warnings.append(
+                f"有 {missing_count} / {len(events)} 个快照源文件已丢失，无法再次从源恢复"
+            )
+
+    if not has_chain and batch.get("restored_from"):
+        warnings.append(
+            "批次标记为已恢复，但缺少 restore_events 明细（旧版本数据，链路不可追溯）"
+        )
+
+    return {
+        "batch_no": batch_no,
+        "batch_id": batch_id,
+        "batch": batch,
+        "events": events,
+        "post_restore_activity": post_activity,
+        "modified_after_restore": modified_after,
+        "warnings": warnings,
+        "has_restore_chain": has_chain,
+    }

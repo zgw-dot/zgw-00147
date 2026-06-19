@@ -4,7 +4,7 @@ import os
 import sys
 import click
 import datetime
-from typing import Dict
+from typing import Dict, Optional, List
 
 from . import db
 from . import manifest as manifest_mod
@@ -305,25 +305,39 @@ def undo(ctx, batch_no, operator):
     click.echo(f"  当前统计: 共{total}项，已签收{signed}，待补件{supplement}，待处理{pending}")
 
 
-def _show_restore_info(batch: Dict) -> None:
-    """显示恢复来源信息"""
-    if batch.get("restored_from"):
-        click.echo(f"恢复来源: {batch['restored_from']}")
-        click.echo(f"恢复时间: {format_time(batch.get('restored_at'))}")
-        if batch.get("restore_diff"):
-            import json
-            try:
-                diff = json.loads(batch["restore_diff"])
-                old_desc = diff.get("old_batch", {}).get("description", "(无)")
-                new_desc = diff.get("new_batch", {}).get("description", "(无)")
-                click.echo(f"覆盖差异: 旧批次「{old_desc}」→ 新批次「{new_desc}」")
-                old_rv = diff.get("review_stats", {}).get("old", {})
-                new_rv = diff.get("review_stats", {}).get("new", {})
-                click.echo(f"            复核: 已签收 {old_rv.get('signed', 0)} → {new_rv.get('signed', 0)}  "
-                           f"待补件 {old_rv.get('supplement', 0)} → {new_rv.get('supplement', 0)}")
-            except (json.JSONDecodeError, TypeError):
-                pass
-        click.echo("")
+def _show_restore_info(batch: Dict, db_path: Optional[str] = None) -> None:
+    """显示恢复来源信息，如有 db_path 则补充链路级信息"""
+    if not batch.get("restored_from"):
+        return
+
+    click.echo(f"恢复来源: {batch['restored_from']}")
+    click.echo(f"恢复时间: {format_time(batch.get('restored_at'))}")
+    if batch.get("restore_diff"):
+        import json
+        try:
+            diff = json.loads(batch["restore_diff"])
+            old_desc = diff.get("old_batch", {}).get("description", "(无)")
+            new_desc = diff.get("new_batch", {}).get("description", "(无)")
+            click.echo(f"覆盖差异: 旧批次「{old_desc}」→ 新批次「{new_desc}」")
+            old_rv = diff.get("review_stats", {}).get("old", {})
+            new_rv = diff.get("review_stats", {}).get("new", {})
+            click.echo(f"            复核: 已签收 {old_rv.get('signed', 0)} → {new_rv.get('signed', 0)}  "
+                       f"待补件 {old_rv.get('supplement', 0)} → {new_rv.get('supplement', 0)}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if db_path:
+        trace = snapshot_mod.build_trace(db_path, batch["batch_no"])
+        if trace and trace["has_restore_chain"]:
+            click.echo(f"恢复链路: 共 {len(trace['events'])} 次恢复")
+            if trace["modified_after_restore"]:
+                click.echo(
+                    f"  [!] 恢复后有 {len(trace['post_restore_activity'])} 条新操作"
+                    f"（使用 trace 命令查看详情）"
+                )
+            else:
+                click.echo("  恢复后未再修改（使用 trace 命令查看完整链路）")
+    click.echo("")
 
 
 @main.command("resume")
@@ -342,7 +356,7 @@ def resume_cmd(ctx, batch_no, show_items):
     click.echo(f"证据目录: {batch['evidence_dir']}")
     click.echo(f"创建时间: {format_time(batch['created_at'])}")
     click.echo(f"更新时间: {format_time(batch['updated_at'])}")
-    _show_restore_info(batch)
+    _show_restore_info(batch, db_path)
     click.echo("")
 
     total_pc, passed, failed, unchecked = db.count_precheck(db_path, batch["id"])
@@ -410,6 +424,8 @@ def export(ctx, batch_no, output_path, fmt):
     output_path = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
+    restore_trace = snapshot_mod.build_trace(db_path, batch_no)
+
     if fmt == "csv":
         count = report_mod.export_csv(items, output_path, batch_info=batch)
     elif fmt == "json":
@@ -418,6 +434,7 @@ def export(ctx, batch_no, output_path, fmt):
             batch_info=batch,
             precheck_stats=precheck_stats,
             review_stats=review_stats,
+            restore_trace=restore_trace,
         )
     else:
         click.echo(f"错误: 不支持的格式: {fmt}", err=True)
@@ -445,7 +462,18 @@ def list_cmd(ctx):
     for b in batches:
         total, signed, supplement, pending = db.count_reviewed(db_path, b["id"])
         progress = f"{signed}/{total}" if total > 0 else "0/0"
-        status_tag = " [已恢复]" if b.get("restored_from") else ""
+        status_tag = ""
+        if b.get("restored_from"):
+            trace = snapshot_mod.build_trace(db_path, b["batch_no"])
+            if trace and trace["has_restore_chain"]:
+                evt_count = len(trace["events"])
+                mod_tag = " [已修改]" if trace["modified_after_restore"] else ""
+                if evt_count > 1:
+                    status_tag = f" [已恢复×{evt_count}{mod_tag}]"
+                else:
+                    status_tag = f" [已恢复{mod_tag}]"
+            else:
+                status_tag = " [已恢复]"
         click.echo(f"  {b['batch_no']}{status_tag}  进度: {progress}  "
                    f"更新: {format_time(b['updated_at'])}")
         if b.get("description"):
@@ -453,6 +481,177 @@ def list_cmd(ctx):
         if b.get("restored_from"):
             click.echo(f"    恢复来源: {b['restored_from']}")
             click.echo(f"    恢复时间: {format_time(b.get('restored_at'))}")
+            trace = snapshot_mod.build_trace(db_path, b["batch_no"])
+            if trace:
+                if trace["has_restore_chain"] and trace["modified_after_restore"]:
+                    click.echo(
+                        f"    恢复后操作: {len(trace['post_restore_activity'])} 条"
+                        f"（trace 查看详情）"
+                    )
+                for w in trace["warnings"]:
+                    click.echo(f"    [!] {w}")
+
+
+@main.command()
+@click.option("--batch", "-b", "batch_no", required=True, help="批次编号")
+@click.pass_context
+def trace(ctx, batch_no):
+    """查看批次恢复链路来龙去脉"""
+    db_path = ensure_db(ctx)
+    trace_data = snapshot_mod.build_trace(db_path, batch_no)
+    if trace_data is None:
+        click.echo(f"错误: 批次 '{batch_no}' 不存在", err=True)
+        sys.exit(1)
+
+    _format_trace_output(trace_data)
+
+
+def _format_trace_output(trace_data: Dict) -> None:
+    """格式化输出恢复链路追踪信息"""
+    click.echo("=" * 60)
+    click.echo(f"批次恢复链路: {trace_data['batch_no']}")
+    click.echo("=" * 60)
+
+    batch = trace_data["batch"]
+    click.echo(f"清单文件: {batch['manifest_path']}")
+    click.echo(f"证据目录: {batch['evidence_dir']}")
+    if batch.get("description"):
+        click.echo(f"批次描述: {batch['description']}")
+    click.echo(f"创建时间: {format_time(batch['created_at'])}")
+    click.echo(f"最后更新: {format_time(batch['updated_at'])}")
+    click.echo("")
+
+    warnings = trace_data.get("warnings", [])
+    if warnings:
+        click.echo("[!] 整体告警:")
+        for w in warnings:
+            click.echo(f"    {w}")
+        click.echo("")
+
+    if not trace_data["has_restore_chain"]:
+        if batch.get("restored_from"):
+            click.echo("该批次由旧版本恢复，仅有基础来源信息，无完整链路：")
+            click.echo(f"  恢复来源: {batch.get('restored_from')}")
+            click.echo(f"  恢复时间: {format_time(batch.get('restored_at'))}")
+        else:
+            click.echo("该批次从未从快照恢复，为原始导入批次。")
+        click.echo("=" * 60)
+        return
+
+    events = trace_data["events"]
+    click.echo(f"恢复链路：共 {len(events)} 次恢复（从早到晚）")
+    click.echo("")
+
+    for idx, ev in enumerate(events, start=1):
+        click.echo("-" * 60)
+        tag_parts = []
+        if ev["was_force"]:
+            tag_parts.append("强制覆盖")
+        if ev["was_remapped"]:
+            tag_parts.append("目录重映射")
+        tag = f" [{'、'.join(tag_parts)}]" if tag_parts else ""
+        click.echo(f"[#{idx}] 恢复事件 #{ev['event_id']}{tag}")
+        click.echo(f"    恢复时间: {format_time(ev['restored_at'])}")
+
+        snap_marker = "✓" if ev["snapshot_exists"] else "✗(已丢失)"
+        click.echo(f"    来源快照: {snap_marker} {ev['snapshot_path']}")
+        if ev.get("snapshot_created_at"):
+            click.echo(f"    快照创建: {format_time(ev['snapshot_created_at'])}")
+        if ev.get("operator"):
+            click.echo(f"    操作人: {ev['operator']}")
+
+        if ev.get("parent_event_id"):
+            if ev["chain_ok"]:
+                click.echo(f"    父事件: #{ev['parent_event_id']}（链路连续）")
+            else:
+                click.echo(f"    父事件: #{ev['parent_event_id']} ✗(链路断档)")
+        else:
+            click.echo("    父事件: 无（链路起点）")
+
+        click.echo("")
+        click.echo("    路径映射:")
+        if ev["was_remapped"]:
+            click.echo(f"      证据目录: {ev.get('evidence_dir_before', '(未知)')}")
+            click.echo(f"                ↓ (重映射)")
+            click.echo(f"                {ev['evidence_dir_after']}")
+        else:
+            if ev.get("evidence_dir_before") and ev["evidence_dir_before"] != ev["evidence_dir_after"]:
+                click.echo(f"      证据目录: {ev['evidence_dir_before']} → {ev['evidence_dir_after']}")
+            else:
+                click.echo(f"      证据目录: {ev['evidence_dir_after']}")
+        if ev.get("manifest_path_before") and ev["manifest_path_before"] != ev["manifest_path_after"]:
+            click.echo(f"      清单文件: {ev['manifest_path_before']} → {ev['manifest_path_after']}")
+        else:
+            click.echo(f"      清单文件: {ev['manifest_path_after']}")
+
+        if ev["was_force"] and ev.get("old_batch_snapshot"):
+            old = ev["old_batch_snapshot"]
+            old_desc = old.get("batch", {}).get("description", "(无描述)")
+            old_rv = old.get("review_stats", {})
+            click.echo("")
+            click.echo(f"    覆盖前批次:「{old_desc}」")
+            click.echo(f"      证据项: {old.get('item_count', '?')} 项")
+            click.echo(
+                f"      复核: 已签收 {old_rv.get('signed', 0)}  "
+                f"待补件 {old_rv.get('supplement', 0)}  "
+                f"待处理 {old_rv.get('pending', 0)}"
+            )
+            click.echo(f"      复核日志: {old.get('review_log_count', '?')} 条")
+
+        if ev.get("restore_diff"):
+            diff = ev["restore_diff"]
+            old_rv = diff.get("review_stats", {}).get("old", {})
+            new_rv = diff.get("review_stats", {}).get("new", {})
+            items_diff = diff.get("items", {})
+            click.echo("")
+            click.echo("    覆盖差异:")
+            click.echo(
+                f"      复核统计: 已签收 {old_rv.get('signed', 0)} → {new_rv.get('signed', 0)}  "
+                f"待补件 {old_rv.get('supplement', 0)} → {new_rv.get('supplement', 0)}  "
+                f"待处理 {old_rv.get('pending', 0)} → {new_rv.get('pending', 0)}"
+            )
+            only_old = items_diff.get("only_in_old", [])
+            only_new = items_diff.get("only_in_new", [])
+            if only_old:
+                click.echo(f"      仅在旧批次: {len(only_old)} 项")
+                for p in only_old[:3]:
+                    click.echo(f"        - {p}")
+                if len(only_old) > 3:
+                    click.echo(f"        ... 还有 {len(only_old) - 3} 项")
+            if only_new:
+                click.echo(f"      仅在新批次: {len(only_new)} 项")
+                for p in only_new[:3]:
+                    click.echo(f"        - {p}")
+                if len(only_new) > 3:
+                    click.echo(f"        ... 还有 {len(only_new) - 3} 项")
+
+        if ev["warnings"]:
+            click.echo("")
+            for w in ev["warnings"]:
+                click.echo(f"    [!] {w}")
+
+    click.echo("-" * 60)
+    click.echo("")
+
+    post = trace_data.get("post_restore_activity", [])
+    if post:
+        click.echo(f"恢复后追加操作（共 {len(post)} 条）:")
+        for log in post:
+            action_label = "撤销" if log["action"] == "undo" else "复核"
+            from_label = STATUS_LABELS.get(log["prev_status"], log["prev_status"])
+            to_label = STATUS_LABELS.get(log["new_status"], log["new_status"])
+            time_str = format_time(log["created_at"])
+            click.echo(f"  [{time_str}] {action_label} #{log['item_id']} {log.get('file_path', '')}")
+            click.echo(f"      {from_label} → {to_label}")
+            if log.get("new_remark"):
+                click.echo(f"      备注: {log['new_remark']}")
+            if log.get("operator"):
+                click.echo(f"      操作人: {log['operator']}")
+    else:
+        click.echo("恢复后未追加任何复核或撤销操作。")
+
+    click.echo("")
+    click.echo("=" * 60)
 
 
 @main.command()
@@ -708,8 +907,9 @@ def _format_restore_summary(summary: Dict) -> None:
               help="目标工作目录（默认使用当前工作目录）")
 @click.option("--dry-run", is_flag=True,
               help="预演恢复，不修改数据库，仅显示恢复信息")
+@click.option("--operator", "-o", default=None, help="操作人（写入恢复事件）")
 @click.pass_context
-def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir, dry_run):
+def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir, dry_run, operator):
     """从快照恢复批次到数据库（支持预演）"""
     work_dir = ctx.obj["work_dir"]
 
@@ -765,6 +965,7 @@ def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir, d
             snapshot_path=snapshot_path,
             force=force,
             evidence_dir=evidence_dir,
+            operator=operator,
         )
     except snapshot_mod.SnapshotConflictError as e:
         click.echo(f"错误: {e}", err=True)

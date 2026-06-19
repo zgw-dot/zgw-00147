@@ -46,7 +46,8 @@ def init_db(db_path: str) -> None:
                 updated_at REAL NOT NULL,
                 restored_from TEXT,
                 restored_at REAL,
-                restore_diff TEXT
+                restore_diff TEXT,
+                last_restore_event_id INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS evidence_items (
@@ -83,9 +84,31 @@ def init_db(db_path: str) -> None:
                 FOREIGN KEY (item_id) REFERENCES evidence_items(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS restore_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                batch_no TEXT NOT NULL,
+                snapshot_path TEXT NOT NULL,
+                snapshot_created_at REAL,
+                parent_restore_event_id INTEGER,
+                restored_at REAL NOT NULL,
+                was_force INTEGER DEFAULT 0,
+                was_remapped INTEGER DEFAULT 0,
+                evidence_dir_before TEXT,
+                evidence_dir_after TEXT NOT NULL,
+                manifest_path_before TEXT,
+                manifest_path_after TEXT NOT NULL,
+                old_batch_snapshot TEXT,
+                restore_diff TEXT,
+                operator TEXT,
+                FOREIGN KEY (batch_id) REFERENCES batches(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_items_batch ON evidence_items(batch_id);
             CREATE INDEX IF NOT EXISTS idx_logs_batch ON review_logs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_logs_item ON review_logs(item_id);
+            CREATE INDEX IF NOT EXISTS idx_restore_batch ON restore_events(batch_id);
+            CREATE INDEX IF NOT EXISTS idx_restore_parent ON restore_events(parent_restore_event_id);
         """)
 
 
@@ -445,5 +468,185 @@ def get_review_history(db_path: str, batch_id: int, limit: int = 50) -> List[Dic
                WHERE rl.batch_id = ?
                ORDER BY rl.id DESC LIMIT ?""",
             (batch_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def _insert_restore_event_with_conn(
+    conn,
+    batch_id: int,
+    batch_no: str,
+    snapshot_path: str,
+    snapshot_created_at: Optional[float],
+    parent_restore_event_id: Optional[int],
+    restored_at: float,
+    was_force: bool,
+    was_remapped: bool,
+    evidence_dir_before: Optional[str],
+    evidence_dir_after: str,
+    manifest_path_before: Optional[str],
+    manifest_path_after: str,
+    old_batch_snapshot: Optional[str],
+    restore_diff: Optional[str],
+    operator: Optional[str],
+) -> int:
+    """
+    在现有数据库连接中插入恢复事件（供事务内调用）。
+    返回新恢复事件 ID。
+    """
+    cursor = conn.execute(
+        """INSERT INTO restore_events
+           (batch_id, batch_no, snapshot_path, snapshot_created_at,
+            parent_restore_event_id, restored_at, was_force, was_remapped,
+            evidence_dir_before, evidence_dir_after,
+            manifest_path_before, manifest_path_after,
+            old_batch_snapshot, restore_diff, operator)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            batch_id,
+            batch_no,
+            snapshot_path,
+            snapshot_created_at,
+            parent_restore_event_id,
+            restored_at,
+            1 if was_force else 0,
+            1 if was_remapped else 0,
+            evidence_dir_before,
+            evidence_dir_after,
+            manifest_path_before,
+            manifest_path_after,
+            old_batch_snapshot,
+            restore_diff,
+            operator,
+        ),
+    )
+    event_id = cursor.lastrowid
+    conn.execute(
+        "UPDATE batches SET last_restore_event_id = ? WHERE id = ?",
+        (event_id, batch_id),
+    )
+    return event_id
+
+
+def insert_restore_event(
+    db_path: str,
+    batch_id: int,
+    batch_no: str,
+    snapshot_path: str,
+    snapshot_created_at: Optional[float],
+    parent_restore_event_id: Optional[int],
+    restored_at: float,
+    was_force: bool,
+    was_remapped: bool,
+    evidence_dir_before: Optional[str],
+    evidence_dir_after: str,
+    manifest_path_before: Optional[str],
+    manifest_path_after: str,
+    old_batch_snapshot: Optional[Dict] = None,
+    restore_diff: Optional[Dict] = None,
+    operator: Optional[str] = None,
+) -> int:
+    """
+    独立事务插入一条恢复事件，返回事件 ID。
+    old_batch_snapshot 和 restore_diff 若传入 Dict 会自动序列化为 JSON。
+    """
+    import json
+
+    old_json = json.dumps(old_batch_snapshot, ensure_ascii=False) if old_batch_snapshot else None
+    diff_json = json.dumps(restore_diff, ensure_ascii=False) if restore_diff else None
+
+    with get_conn(db_path) as conn:
+        return _insert_restore_event_with_conn(
+            conn,
+            batch_id=batch_id,
+            batch_no=batch_no,
+            snapshot_path=snapshot_path,
+            snapshot_created_at=snapshot_created_at,
+            parent_restore_event_id=parent_restore_event_id,
+            restored_at=restored_at,
+            was_force=was_force,
+            was_remapped=was_remapped,
+            evidence_dir_before=evidence_dir_before,
+            evidence_dir_after=evidence_dir_after,
+            manifest_path_before=manifest_path_before,
+            manifest_path_after=manifest_path_after,
+            old_batch_snapshot=old_json,
+            restore_diff=diff_json,
+            operator=operator,
+        )
+
+
+def get_restore_events_for_batch(
+    db_path: str, batch_id: Optional[int] = None, batch_no: Optional[str] = None
+) -> List[Dict]:
+    """
+    获取批次的全部恢复事件，按时间从早到晚排序。
+    优先按 batch_no 查询（不受 force 覆盖时 batch_id 变化影响），
+    batch_no 未提供时回退到 batch_id。
+    """
+    if batch_no is None and batch_id is None:
+        raise ValueError("必须提供 batch_id 或 batch_no")
+
+    with get_conn(db_path) as conn:
+        if batch_no is not None:
+            rows = conn.execute(
+                "SELECT * FROM restore_events WHERE batch_no = ? ORDER BY id ASC",
+                (batch_no,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM restore_events WHERE batch_id = ? ORDER BY id ASC",
+                (batch_id,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["was_force"] = bool(d.get("was_force", 0))
+            d["was_remapped"] = bool(d.get("was_remapped", 0))
+            result.append(d)
+        return result
+
+
+def get_last_restore_event(
+    db_path: str, batch_id: Optional[int] = None, batch_no: Optional[str] = None
+) -> Optional[Dict]:
+    """
+    获取批次最近一次恢复事件。
+    优先按 batch_no 查询。
+    """
+    if batch_no is None and batch_id is None:
+        raise ValueError("必须提供 batch_id 或 batch_no")
+
+    with get_conn(db_path) as conn:
+        if batch_no is not None:
+            row = conn.execute(
+                "SELECT * FROM restore_events WHERE batch_no = ? ORDER BY id DESC LIMIT 1",
+                (batch_no,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM restore_events WHERE batch_id = ? ORDER BY id DESC LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["was_force"] = bool(d.get("was_force", 0))
+        d["was_remapped"] = bool(d.get("was_remapped", 0))
+        return d
+
+
+def get_review_logs_after_time(
+    db_path: str, batch_id: int, after_ts: float
+) -> List[Dict]:
+    """获取指定时间戳之后的所有复核/撤销记录（含 file_path）"""
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """SELECT rl.*, ei.file_path
+               FROM review_logs rl
+               JOIN evidence_items ei ON rl.item_id = ei.id
+               WHERE rl.batch_id = ? AND rl.created_at > ?
+               ORDER BY rl.id ASC""",
+            (batch_id, after_ts),
         ).fetchall()
         return [dict(r) for r in rows]

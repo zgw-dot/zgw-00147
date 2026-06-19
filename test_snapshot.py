@@ -1172,6 +1172,313 @@ class TestSnapshot(unittest.TestCase):
         )
         self.assertIn("restored_at", export_data["batch"]["restore"])
 
+    def test_build_trace_nonexistent_batch(self):
+        """build_trace 对不存在批次返回 None"""
+        trace = snapshot_mod.build_trace(self.db_path, "no_such_batch")
+        self.assertIsNone(trace)
+
+    def test_build_trace_original_import_no_restore(self):
+        """从未恢复的原始批次，build_trace 显示 has_restore_chain=False"""
+        self._import_batch(batch_no="orig_batch", description="原始批次")
+        trace = snapshot_mod.build_trace(self.db_path, "orig_batch")
+        self.assertIsNotNone(trace)
+        self.assertEqual(trace["batch_no"], "orig_batch")
+        self.assertFalse(trace["has_restore_chain"])
+        self.assertEqual(trace["events"], [])
+        self.assertFalse(trace["modified_after_restore"])
+        self.assertEqual(trace["post_restore_activity"], [])
+
+    def test_restore_event_written(self):
+        """恢复后 restore_events 表有记录"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "evt_test.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "evt_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="unit_test")
+
+        events = db.get_restore_events_for_batch(
+            new_db, db.get_batch_by_no(new_db, "test_batch")["id"]
+        )
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertEqual(ev["snapshot_path"], os.path.abspath(snapshot_path))
+        self.assertEqual(ev["operator"], "unit_test")
+        self.assertFalse(ev["was_force"])
+        self.assertFalse(ev["was_remapped"])
+        self.assertIsNone(ev["parent_restore_event_id"])
+        self.assertIsNotNone(ev["restored_at"])
+
+    def test_build_trace_normal_restore(self):
+        """普通恢复后 build_trace 返回完整链路"""
+        batch_id, _ = self._import_batch(description="源批次")
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "trace_normal.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "trace_work_normal")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="trace_op")
+        trace = snapshot_mod.build_trace(new_db, "test_batch")
+
+        self.assertIsNotNone(trace)
+        self.assertTrue(trace["has_restore_chain"])
+        self.assertEqual(len(trace["events"]), 1)
+        ev = trace["events"][0]
+        self.assertTrue(ev["snapshot_exists"])
+        self.assertEqual(ev["operator"], "trace_op")
+        self.assertFalse(ev["was_force"])
+        self.assertFalse(ev["was_remapped"])
+        self.assertIsNone(ev["parent_event_id"])
+        self.assertTrue(ev["chain_ok"])
+        self.assertEqual(ev["warnings"], [])
+        self.assertFalse(trace["modified_after_restore"])
+        self.assertEqual(trace["warnings"], [])
+
+    def test_build_trace_snapshot_missing(self):
+        """快照源文件被删除后，build_trace 显示警告"""
+        batch_id, _ = self._import_batch()
+        snapshot_path = os.path.join(self.work_dir, "trace_missing.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "trace_work_missing")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        snapshot_mod.restore_snapshot(new_db, snapshot_path)
+        os.remove(snapshot_path)
+        self.assertFalse(os.path.exists(snapshot_path))
+
+        trace = snapshot_mod.build_trace(new_db, "test_batch")
+        self.assertTrue(trace["has_restore_chain"])
+        ev = trace["events"][0]
+        self.assertFalse(ev["snapshot_exists"])
+        self.assertIn("快照源文件已不存在", ev["warnings"])
+        self.assertTrue(
+            any("快照源文件已丢失" in w for w in trace["warnings"])
+        )
+
+    def test_build_trace_force_restore_with_parent(self):
+        """强制覆盖恢复建立父事件关联，build_trace 显示链路和差异"""
+        batch_id1, _ = self._import_batch(description="第一版", batch_no="chain_batch")
+        self._review_some_items(batch_id1)
+        snap1 = os.path.join(self.work_dir, "chain_v1.json")
+        snapshot_mod.save_snapshot(self.db_path, "chain_batch", snap1)
+
+        work_dir2 = os.path.join(self.work_dir, "chain_work")
+        os.makedirs(work_dir2, exist_ok=True)
+        db2 = db.get_db_path(work_dir2)
+        db.init_db(db2)
+        snapshot_mod.restore_snapshot(db2, snap1, operator="op_v1")
+
+        batch_v1 = db.get_batch_by_no(db2, "chain_batch")
+        items_v1 = db.get_evidence_items(db2, batch_v1["id"])
+        db.review_item(
+            db2,
+            batch_id=batch_v1["id"],
+            item_id=items_v1[0]["id"],
+            new_status="supplement",
+            remark="v1 现场修改",
+            operator="live_user",
+            action="review",
+        )
+
+        snap2 = os.path.join(self.work_dir, "chain_v2.json")
+        snapshot_mod.save_snapshot(db2, "chain_batch", snap2)
+
+        snapshot_mod.restore_snapshot(db2, snap2, force=True, operator="op_v2")
+
+        trace = snapshot_mod.build_trace(db2, "chain_batch")
+        self.assertEqual(len(trace["events"]), 2)
+
+        ev1, ev2 = trace["events"]
+        self.assertIsNone(ev1["parent_event_id"])
+        self.assertEqual(ev2["parent_event_id"], ev1["event_id"])
+        self.assertTrue(ev2["was_force"])
+        self.assertTrue(ev2["chain_ok"])
+
+        self.assertIsNotNone(ev2.get("old_batch_snapshot"))
+        self.assertEqual(
+            ev2["old_batch_snapshot"]["batch"]["description"], "第一版"
+        )
+        self.assertIsNotNone(ev2.get("restore_diff"))
+        self.assertIn("review_stats", ev2["restore_diff"])
+
+    def test_build_trace_modified_after_restore(self):
+        """恢复后继续复核，build_trace 显示 modified_after_restore 和操作记录"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "mod_after.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "mod_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        snapshot_mod.restore_snapshot(new_db, snapshot_path)
+        batch = db.get_batch_by_no(new_db, "test_batch")
+        items = db.get_evidence_items(new_db, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self.assertGreater(len(pending), 0)
+        db.review_item(
+            new_db,
+            batch_id=batch["id"],
+            item_id=pending[0]["id"],
+            new_status="signed",
+            remark="恢复后新加",
+            operator="after_user",
+            action="review",
+        )
+        db.undo_last_review(new_db, batch["id"], operator="after_user")
+
+        trace = snapshot_mod.build_trace(new_db, "test_batch")
+        self.assertTrue(trace["modified_after_restore"])
+        self.assertEqual(len(trace["post_restore_activity"]), 2)
+        actions = [log["action"] for log in trace["post_restore_activity"]]
+        self.assertEqual(actions, ["review", "undo"])
+        self.assertTrue(
+            any("恢复后有" in w and "新的复核/撤销" in w for w in trace["warnings"])
+        )
+
+    def test_restore_event_atomic_failure(self):
+        """恢复失败时 restore_events 不留半截记录"""
+        keep_id, _, _, _, _ = self._import_batch_isolated("keep_atomic", "保留批次")
+        db.review_item(
+            self.db_path,
+            batch_id=keep_id,
+            item_id=db.get_evidence_items(self.db_path, keep_id)[0]["id"],
+            new_status="signed",
+            remark="原复核",
+            operator="orig",
+            action="review",
+        )
+
+        snap_id, _, orig_manifest, orig_evidence, _ = self._import_batch_isolated(
+            "atomic_fail", "待恢复"
+        )
+        snapshot_path = os.path.join(self.work_dir, "atomic_fail.json")
+        snapshot_mod.save_snapshot(self.db_path, "atomic_fail", snapshot_path)
+
+        os.remove(orig_manifest)
+        shutil.rmtree(orig_evidence)
+
+        before_events = db.get_restore_events_for_batch(
+            self.db_path, keep_id
+        )
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError):
+            snapshot_mod.restore_snapshot(
+                self.db_path, snapshot_path, force=True
+            )
+
+        keep = db.get_batch_by_no(self.db_path, "keep_atomic")
+        after_events = db.get_restore_events_for_batch(self.db_path, keep["id"])
+        self.assertEqual(len(before_events), len(after_events))
+
+        snap = db.get_batch_by_no(self.db_path, "atomic_fail")
+        snap_events = db.get_restore_events_for_batch(self.db_path, snap["id"])
+        self.assertEqual(len(snap_events), 0)
+
+    def test_restore_with_remap_records_in_event(self):
+        """目录重映射时，restore_events 正确记录 before/after"""
+        batch_id, _, _, orig_evidence, _ = self._import_batch_isolated("remap_evt")
+        snapshot_path = os.path.join(self.work_dir, "remap_evt.json")
+        snapshot_mod.save_snapshot(self.db_path, "remap_evt", snapshot_path)
+
+        mapped_dir = os.path.join(self.work_dir, "mapped_real")
+        os.makedirs(mapped_dir, exist_ok=True)
+        shutil.copytree(orig_evidence, os.path.join(mapped_dir, "sub"))
+        real_mapped = os.path.join(mapped_dir, "sub")
+
+        new_work = os.path.join(self.work_dir, "remap_evt_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        snapshot_mod.restore_snapshot(
+            new_db, snapshot_path, evidence_dir=real_mapped
+        )
+
+        batch = db.get_batch_by_no(new_db, "remap_evt")
+        events = db.get_restore_events_for_batch(new_db, batch["id"])
+        self.assertEqual(len(events), 1)
+        ev = events[0]
+        self.assertTrue(ev["was_remapped"])
+        self.assertEqual(ev["evidence_dir_before"], orig_evidence)
+        self.assertEqual(ev["evidence_dir_after"], os.path.abspath(real_mapped))
+
+        trace = snapshot_mod.build_trace(new_db, "remap_evt")
+        self.assertTrue(trace["events"][0]["was_remapped"])
+
+    def test_last_restore_event_id_backref(self):
+        """恢复后 batches.last_restore_event_id 正确回写"""
+        batch_id, _ = self._import_batch()
+        snapshot_path = os.path.join(self.work_dir, "backref.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "backref_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        snapshot_mod.restore_snapshot(new_db, snapshot_path)
+        batch = db.get_batch_by_no(new_db, "test_batch")
+        self.assertIsNotNone(batch.get("last_restore_event_id"))
+
+        last_evt = db.get_last_restore_event(new_db, batch["id"])
+        self.assertIsNotNone(last_evt)
+        self.assertEqual(last_evt["id"], batch["last_restore_event_id"])
+
+    def test_cross_restart_consistency(self):
+        """重启后重新连接数据库，恢复链路数据依然完整"""
+        batch_id, _ = self._import_batch()
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "restart.json")
+        snapshot_mod.save_snapshot(self.db_path, "test_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "restart_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db_path = db.get_db_path(new_work)
+        db.init_db(new_db_path)
+        snapshot_mod.restore_snapshot(new_db_path, snapshot_path, operator="first")
+
+        batch = db.get_batch_by_no(new_db_path, "test_batch")
+        items = db.get_evidence_items(new_db_path, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        db.review_item(
+            new_db_path,
+            batch_id=batch["id"],
+            item_id=pending[0]["id"],
+            new_status="supplement",
+            remark="重开前复核",
+            operator="first",
+            action="review",
+        )
+
+        import importlib
+        import evidence_cli.db as db_mod_reimport
+        importlib.reload(db_mod_reimport)
+
+        batch2 = db_mod_reimport.get_batch_by_no(new_db_path, "test_batch")
+        self.assertIsNotNone(batch2.get("last_restore_event_id"))
+
+        trace2 = snapshot_mod.build_trace(new_db_path, "test_batch")
+        self.assertTrue(trace2["has_restore_chain"])
+        self.assertEqual(len(trace2["events"]), 1)
+        self.assertTrue(trace2["modified_after_restore"])
+        self.assertGreaterEqual(len(trace2["post_restore_activity"]), 1)
+        self.assertEqual(trace2["events"][0]["operator"], "first")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

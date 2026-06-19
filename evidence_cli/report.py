@@ -69,11 +69,12 @@ def export_csv(items: List[Dict], output_path: str, batch_info: Dict = None) -> 
 
 
 def export_json(items: List[Dict], output_path: str, batch_info: Dict = None,
-                review_stats: Dict = None, precheck_stats: Dict = None) -> int:
+                review_stats: Dict = None, precheck_stats: Dict = None,
+                restore_trace: Dict = None) -> int:
     """
     导出 JSON 报告。
 
-    包含：批次信息、统计信息、证据项列表、复核历史摘要、恢复摘要（如果有）
+    包含：批次信息、统计信息、证据项列表、复核历史摘要、完整恢复链路（如果有）
     """
     import json as _json
 
@@ -104,6 +105,53 @@ def export_json(items: List[Dict], output_path: str, batch_info: Dict = None,
                 except (_json.JSONDecodeError, TypeError):
                     restore_info["diff"] = batch_info["restore_diff"]
             report["batch"]["restore"] = restore_info
+
+    if restore_trace and restore_trace.get("has_restore_chain"):
+        chain = {
+            "event_count": len(restore_trace["events"]),
+            "modified_after_restore": restore_trace.get("modified_after_restore", False),
+            "warnings": restore_trace.get("warnings", []),
+            "events": [],
+        }
+        for ev in restore_trace["events"]:
+            chain["events"].append({
+                "event_id": ev["event_id"],
+                "restored_at": ev["restored_at"],
+                "snapshot_path": ev["snapshot_path"],
+                "snapshot_exists": ev["snapshot_exists"],
+                "snapshot_created_at": ev.get("snapshot_created_at"),
+                "parent_event_id": ev.get("parent_event_id"),
+                "was_force": ev["was_force"],
+                "was_remapped": ev["was_remapped"],
+                "evidence_dir_before": ev.get("evidence_dir_before"),
+                "evidence_dir_after": ev["evidence_dir_after"],
+                "manifest_path_before": ev.get("manifest_path_before"),
+                "manifest_path_after": ev["manifest_path_after"],
+                "old_batch_snapshot": ev.get("old_batch_snapshot"),
+                "restore_diff": ev.get("restore_diff"),
+                "operator": ev.get("operator"),
+                "chain_ok": ev.get("chain_ok", True),
+                "warnings": ev.get("warnings", []),
+            })
+
+        post_activity = restore_trace.get("post_restore_activity", [])
+        if post_activity:
+            chain["post_restore_activity"] = [
+                {
+                    "id": log.get("id"),
+                    "action": log.get("action"),
+                    "item_id": log.get("item_id"),
+                    "file_path": log.get("file_path"),
+                    "prev_status": log.get("prev_status"),
+                    "new_status": log.get("new_status"),
+                    "new_remark": log.get("new_remark"),
+                    "operator": log.get("operator"),
+                    "created_at": log.get("created_at"),
+                }
+                for log in post_activity
+            ]
+
+        report["restore_trace"] = chain
 
     if precheck_stats:
         report["statistics"]["precheck"] = precheck_stats

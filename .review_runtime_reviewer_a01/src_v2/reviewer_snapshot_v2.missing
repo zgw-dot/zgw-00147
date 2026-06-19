@@ -1,0 +1,59 @@
+{
+  "version": "1.0",
+  "snapshot_created_at": 1781899384.3370202,
+  "batch": {
+    "batch_no": "reviewer_batch",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\manifest_v2.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\evidence",
+    "description": "reviewer force batch v2",
+    "created_at": 1781899345.9052005,
+    "updated_at": 1781899374.1402342
+  },
+  "items": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "file_path": "docs/a.txt",
+      "expected_size": 41,
+      "expected_sha256": "5a0ea50a16fa0115e38d315334b158d51c48f4765e6068c9bf92ad1dab444a0d",
+      "manifest_line_no": 2,
+      "actual_size": 41,
+      "actual_sha256": "5a0ea50a16fa0115e38d315334b158d51c48f4765e6068c9bf92ad1dab444a0d",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "force snapshot review",
+      "reviewed_at": 1781899374.1402342
+    },
+    {
+      "id": 2,
+      "batch_id": 1,
+      "file_path": "images/c.png",
+      "expected_size": 46,
+      "expected_sha256": "2bb69134cb0564d3745edd3ce33e7f7810afb6a8f14241285735de99cd3013f4",
+      "manifest_line_no": 3,
+      "actual_size": 46,
+      "actual_sha256": "2bb69134cb0564d3745edd3ce33e7f7810afb6a8f14241285735de99cd3013f4",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "review_logs": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "item_id": 1,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "supplement",
+      "new_remark": "force snapshot review",
+      "action": "review",
+      "operator": "force_source",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781899374.1402342,
+      "file_path": "docs/a.txt"
+    }
+  ]
+}

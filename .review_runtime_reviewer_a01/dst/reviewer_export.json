@@ -1,0 +1,256 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "reviewer_batch",
+    "description": "reviewer force batch v2",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\manifest_v2.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence",
+    "created_at": 1781899345.9052005,
+    "updated_at": 1781899440.9890125,
+    "restore": {
+      "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\reviewer_snapshot_v2.json",
+      "restored_at": 1781899394.2636375,
+      "diff": {
+        "old_batch": {
+          "description": "reviewer normal batch",
+          "created_at": 1781899195.3831575,
+          "updated_at": 1781899224.2570393,
+          "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\manifest_ok.csv",
+          "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence"
+        },
+        "new_batch": {
+          "description": "reviewer force batch v2",
+          "created_at": 1781899345.9052005,
+          "updated_at": 1781899374.1402342,
+          "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\manifest_v2.csv",
+          "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence"
+        },
+        "review_stats": {
+          "old": {
+            "total": 3,
+            "signed": 1,
+            "supplement": 1,
+            "pending": 1
+          },
+          "new": {
+            "total": 2,
+            "signed": 0,
+            "supplement": 1,
+            "pending": 1
+          }
+        },
+        "precheck_stats": {
+          "old": {
+            "total": 3,
+            "passed": 3,
+            "failed": 0,
+            "unchecked": 0
+          },
+          "new": {
+            "total": 2,
+            "passed": 2,
+            "failed": 0,
+            "unchecked": 0
+          }
+        },
+        "items": {
+          "only_in_old": [
+            "docs/b.txt"
+          ],
+          "only_in_new": [],
+          "in_both": [
+            "docs/a.txt",
+            "images/c.png"
+          ]
+        }
+      }
+    }
+  },
+  "statistics": {
+    "precheck": {
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review": {
+      "total": 2,
+      "signed": 0,
+      "supplement": 1,
+      "pending": 1
+    }
+  },
+  "items": [
+    {
+      "id": 4,
+      "file_path": "docs/a.txt",
+      "manifest_line_no": 2,
+      "expected_size": 41,
+      "actual_size": 41,
+      "expected_sha256": "5a0ea50a16fa0115e38d315334b158d51c48f4765e6068c9bf92ad1dab444a0d",
+      "actual_sha256": "5a0ea50a16fa0115e38d315334b158d51c48f4765e6068c9bf92ad1dab444a0d",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "force snapshot review",
+      "reviewed_at": 1781899374.1402342
+    },
+    {
+      "id": 5,
+      "file_path": "images/c.png",
+      "manifest_line_no": 3,
+      "expected_size": 46,
+      "actual_size": 46,
+      "expected_sha256": "2bb69134cb0564d3745edd3ce33e7f7810afb6a8f14241285735de99cd3013f4",
+      "actual_sha256": "2bb69134cb0564d3745edd3ce33e7f7810afb6a8f14241285735de99cd3013f4",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": 1781899440.9890125
+    }
+  ],
+  "restore_trace": {
+    "event_count": 2,
+    "modified_after_restore": true,
+    "warnings": [
+      "该批次在最近一次恢复后有 2 条新的复核/撤销操作"
+    ],
+    "events": [
+      {
+        "event_id": 1,
+        "restored_at": 1781899269.51637,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\reviewer_snapshot.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781899234.092105,
+        "parent_event_id": null,
+        "was_force": false,
+        "was_remapped": true,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\manifest_ok.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\manifest_ok.csv",
+        "old_batch_snapshot": null,
+        "restore_diff": null,
+        "operator": "restore_user",
+        "chain_ok": true,
+        "warnings": []
+      },
+      {
+        "event_id": 2,
+        "restored_at": 1781899394.2636375,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\reviewer_snapshot_v2.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781899384.3370202,
+        "parent_event_id": 1,
+        "was_force": true,
+        "was_remapped": true,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\manifest_v2.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\manifest_v2.csv",
+        "old_batch_snapshot": {
+          "batch": {
+            "id": 1,
+            "batch_no": "reviewer_batch",
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\manifest_ok.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence",
+            "description": "reviewer normal batch",
+            "created_at": 1781899195.3831575,
+            "updated_at": 1781899224.2570393,
+            "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\reviewer_snapshot.json",
+            "restored_at": 1781899269.51637,
+            "last_restore_event_id": 1
+          },
+          "review_stats": {
+            "total": 3,
+            "signed": 1,
+            "supplement": 1,
+            "pending": 1
+          },
+          "item_count": 3,
+          "review_log_count": 2
+        },
+        "restore_diff": {
+          "old_batch": {
+            "description": "reviewer normal batch",
+            "created_at": 1781899195.3831575,
+            "updated_at": 1781899224.2570393,
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src\\manifest_ok.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence"
+          },
+          "new_batch": {
+            "description": "reviewer force batch v2",
+            "created_at": 1781899345.9052005,
+            "updated_at": 1781899374.1402342,
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\src_v2\\manifest_v2.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_a01\\mapped_evidence"
+          },
+          "review_stats": {
+            "old": {
+              "total": 3,
+              "signed": 1,
+              "supplement": 1,
+              "pending": 1
+            },
+            "new": {
+              "total": 2,
+              "signed": 0,
+              "supplement": 1,
+              "pending": 1
+            }
+          },
+          "precheck_stats": {
+            "old": {
+              "total": 3,
+              "passed": 3,
+              "failed": 0,
+              "unchecked": 0
+            },
+            "new": {
+              "total": 2,
+              "passed": 2,
+              "failed": 0,
+              "unchecked": 0
+            }
+          },
+          "items": {
+            "only_in_old": [
+              "docs/b.txt"
+            ],
+            "only_in_new": [],
+            "in_both": [
+              "docs/a.txt",
+              "images/c.png"
+            ]
+          }
+        },
+        "operator": "force_restore_user",
+        "chain_ok": true,
+        "warnings": []
+      }
+    ],
+    "post_restore_activity": [
+      {
+        "id": 4,
+        "action": "review",
+        "item_id": 5,
+        "file_path": "images/c.png",
+        "prev_status": "pending",
+        "new_status": "signed",
+        "new_remark": "post restore sign",
+        "operator": "post_restore_user",
+        "created_at": 1781899427.3923225
+      },
+      {
+        "id": 5,
+        "action": "undo",
+        "item_id": 5,
+        "file_path": "images/c.png",
+        "prev_status": "signed",
+        "new_status": "pending",
+        "new_remark": null,
+        "operator": "post_restore_user",
+        "created_at": 1781899440.9890125
+      }
+    ]
+  }
+}
