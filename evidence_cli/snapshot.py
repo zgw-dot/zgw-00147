@@ -155,6 +155,7 @@ def restore_snapshot(
         SnapshotNotFoundError: 快照文件不存在
         SnapshotFormatError: 快照格式错误
         SnapshotVersionError: 版本不兼容
+        SnapshotMissingFilesError: 快照引用的清单或证据目录缺失
     """
     snapshot = load_snapshot(snapshot_path)
 
@@ -175,6 +176,16 @@ def restore_snapshot(
         evidence_dir = batch_data["evidence_dir"]
 
     manifest_path = batch_data["manifest_path"]
+
+    missing = []
+    if not os.path.isfile(manifest_path):
+        missing.append(f"清单文件: {manifest_path}")
+    if not os.path.isdir(evidence_dir):
+        missing.append(f"证据目录: {evidence_dir}")
+    if missing:
+        raise SnapshotMissingFilesError(
+            "快照引用的路径缺失，无法恢复：\n  " + "\n  ".join(missing)
+        )
 
     _restore_batch_with_logs(
         db_path=db_path,

@@ -593,6 +593,9 @@ def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir):
     except snapshot_mod.SnapshotConflictError as e:
         click.echo(f"错误: {e}", err=True)
         sys.exit(1)
+    except snapshot_mod.SnapshotMissingFilesError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
 
     click.echo(f"批次已恢复: {batch_no}")
     click.echo(f"  目标数据库: {target_db_path}")

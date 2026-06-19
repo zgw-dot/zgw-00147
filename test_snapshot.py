@@ -2,10 +2,12 @@
 
 import os
 import sys
+import csv
 import json
 import tempfile
 import shutil
 import unittest
+from typing import List, Dict, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,6 +65,62 @@ class TestSnapshot(unittest.TestCase):
             )
             log_ids.append(log_id)
         return log_ids
+
+    def _create_isolated_fixture(self, base_dir: str) -> Tuple[str, str, List[Dict]]:
+        """
+        在 base_dir 下创建一套完全独立的 manifest、evidence 目录和解析后的 items。
+
+        返回 (manifest_path, evidence_dir, items)
+        """
+        evidence_dir = os.path.join(base_dir, "evidence")
+        os.makedirs(os.path.join(evidence_dir, "docs"), exist_ok=True)
+        os.makedirs(os.path.join(evidence_dir, "images"), exist_ok=True)
+
+        file_a = os.path.join(evidence_dir, "docs", "a.txt")
+        file_b = os.path.join(evidence_dir, "docs", "b.txt")
+        file_c = os.path.join(evidence_dir, "images", "c.png")
+        for p, content in [(file_a, b"content of a 1234567890123456789012345678"),
+                           (file_b, b"content of b 12345678901234567890123456789012"),
+                           (file_c, b"png-bytes-here-1234567890123456789012345678901")]:
+            with open(p, "wb") as f:
+                f.write(content)
+
+        manifest_path = os.path.join(base_dir, "manifest.csv")
+        import hashlib
+        def sha(p):
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                h.update(f.read())
+            return h.hexdigest()
+
+        with open(manifest_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["file_path", "size", "sha256"])
+            w.writerow(["docs/a.txt", os.path.getsize(file_a), sha(file_a)])
+            w.writerow(["docs/b.txt", os.path.getsize(file_b), sha(file_b)])
+            w.writerow(["images/c.png", os.path.getsize(file_c), sha(file_c)])
+
+        parsed = manifest_mod.parse_manifest(manifest_path)
+        return manifest_path, evidence_dir, parsed.items
+
+    def _import_batch_isolated(self, batch_no: str, description: str = "隔离批次"):
+        """
+        使用隔离的 fixture（临时 manifest + 临时 evidence_dir）导入批次。
+        返回 (batch_id, item_count, manifest_path, evidence_dir, items)
+        """
+        fixture_dir = os.path.join(self.work_dir, f"fixture_{batch_no}")
+        os.makedirs(fixture_dir, exist_ok=True)
+        manifest_path, evidence_dir, items = self._create_isolated_fixture(fixture_dir)
+
+        batch_id, count = db.replace_batch(
+            self.db_path,
+            batch_no=batch_no,
+            manifest_path=manifest_path,
+            evidence_dir=evidence_dir,
+            items=items,
+            description=description,
+        )
+        return batch_id, count, manifest_path, evidence_dir, items
 
     def test_save_snapshot(self):
         """测试保存快照"""
@@ -393,6 +451,199 @@ class TestSnapshot(unittest.TestCase):
         snapshot_path = os.path.join(self.work_dir, "nonexistent.json")
         with self.assertRaises(snapshot_mod.SnapshotNotFoundError):
             snapshot_mod.save_snapshot(self.db_path, "no_such_batch", snapshot_path)
+
+    def test_restore_manifest_missing(self):
+        """测试原清单文件缺失时恢复失败"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("iso_manifest")
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "snap_manifest_gone.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_manifest", snapshot_path)
+
+        batch_before = db.get_batch_by_no(self.db_path, "iso_manifest")
+        orig_manifest = batch_before["manifest_path"]
+        os.remove(orig_manifest)
+
+        new_work_dir = os.path.join(self.work_dir, "new_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError) as ctx:
+            snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+
+        self.assertIn("清单文件", str(ctx.exception))
+        self.assertIn(orig_manifest, str(ctx.exception))
+
+        batches_after = db.list_batches(new_db_path)
+        self.assertEqual(len(batches_after), 0)
+
+    def test_restore_evidence_dir_missing(self):
+        """测试原证据目录缺失时恢复失败"""
+        batch_id, _, _, orig_evidence_dir, _ = self._import_batch_isolated("iso_evidence")
+        self._review_some_items(batch_id)
+
+        snapshot_path = os.path.join(self.work_dir, "snap_evidence_gone.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_evidence", snapshot_path)
+
+        shutil.rmtree(orig_evidence_dir)
+        self.assertFalse(os.path.isdir(orig_evidence_dir))
+
+        new_work_dir = os.path.join(self.work_dir, "new_work2")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError) as ctx:
+            snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+
+        self.assertIn("证据目录", str(ctx.exception))
+        self.assertIn(orig_evidence_dir, str(ctx.exception))
+
+        batches_after = db.list_batches(new_db_path)
+        self.assertEqual(len(batches_after), 0)
+
+    def test_restore_missing_files_no_partial_data(self):
+        """测试缺文件失败后，已有批次的数据库保持不变（不落半截数据）"""
+        keep_id, _, _, _, _ = self._import_batch_isolated("keep_me", "不可被破坏")
+        first_item = db.get_evidence_items(self.db_path, keep_id)[0]
+        db.review_item(
+            self.db_path,
+            batch_id=keep_id,
+            item_id=first_item["id"],
+            new_status="signed",
+            remark="恢复前的原始复核",
+            operator="original",
+            action="review",
+        )
+        before_keep_logs = db.get_review_history(self.db_path, keep_id, limit=100)
+        before_keep_total, before_keep_signed, _, _ = db.count_reviewed(self.db_path, keep_id)
+
+        snap_id, _, orig_manifest, orig_evidence, _ = self._import_batch_isolated("to_snapshot", "待快照批次")
+        items_before = db.get_evidence_items(self.db_path, snap_id)
+        logs_before = db.get_review_history(self.db_path, snap_id, limit=100)
+        _, before_snap_signed, before_snap_supp, before_snap_pend = db.count_reviewed(
+            self.db_path, snap_id
+        )
+
+        snapshot_path = os.path.join(self.work_dir, "snap_both_gone.json")
+        snapshot_mod.save_snapshot(self.db_path, "to_snapshot", snapshot_path)
+
+        os.remove(orig_manifest)
+        shutil.rmtree(orig_evidence)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError):
+            snapshot_mod.restore_snapshot(self.db_path, snapshot_path, force=True)
+
+        keep_batch = db.get_batch_by_no(self.db_path, "keep_me")
+        self.assertIsNotNone(keep_batch)
+        self.assertEqual(keep_batch["description"], "不可被破坏")
+        after_keep_logs = db.get_review_history(self.db_path, keep_batch["id"], limit=100)
+        after_keep_total, after_keep_signed, _, _ = db.count_reviewed(self.db_path, keep_batch["id"])
+        self.assertEqual(len(after_keep_logs), len(before_keep_logs))
+        self.assertEqual(after_keep_signed, before_keep_signed)
+        self.assertEqual(after_keep_total, before_keep_total)
+
+        snap_after = db.get_batch_by_no(self.db_path, "to_snapshot")
+        self.assertIsNotNone(snap_after)
+        self.assertEqual(snap_after["description"], "待快照批次")
+        items_after = db.get_evidence_items(self.db_path, snap_after["id"])
+        self.assertEqual(len(items_after), len(items_before))
+        _, after_snap_signed, after_snap_supp, after_snap_pend = db.count_reviewed(
+            self.db_path, snap_after["id"]
+        )
+        self.assertEqual(after_snap_signed, before_snap_signed)
+        self.assertEqual(after_snap_supp, before_snap_supp)
+        self.assertEqual(after_snap_pend, before_snap_pend)
+
+    def test_restore_with_remapped_evidence_bypasses_check(self):
+        """测试使用 --evidence-dir 重映射时，会校验新目录而非原目录"""
+        batch_id, _, _, orig_evidence, _ = self._import_batch_isolated("iso_remap")
+        snapshot_path = os.path.join(self.work_dir, "snap_remap.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_remap", snapshot_path)
+
+        shutil.rmtree(orig_evidence)
+
+        new_work_dir = os.path.join(self.work_dir, "remap_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError) as ctx:
+            snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        self.assertIn("证据目录", str(ctx.exception))
+
+        remapped_dir = os.path.join(self.work_dir, "mapped_evidence_real")
+        remap_fixture = os.path.join(self.work_dir, "remap_fixture")
+        os.makedirs(remap_fixture, exist_ok=True)
+        _, _, _ = self._create_isolated_fixture(remap_fixture)
+        shutil.move(os.path.join(remap_fixture, "evidence"), remapped_dir)
+
+        restored_batch, count = snapshot_mod.restore_snapshot(
+            new_db_path,
+            snapshot_path,
+            evidence_dir=remapped_dir,
+        )
+        self.assertEqual(restored_batch, "iso_remap")
+        self.assertGreater(count, 0)
+
+        new_batch = db.get_batch_by_no(new_db_path, restored_batch)
+        self.assertEqual(new_batch["evidence_dir"], os.path.abspath(remapped_dir))
+
+    def test_restore_normal_then_review_undo_export(self):
+        """回归测试：正常恢复后仍可继续 review、undo、export"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("iso_normal")
+        self._review_some_items(batch_id)
+        batch_before = db.get_batch_by_no(self.db_path, "iso_normal")
+
+        snapshot_path = os.path.join(self.work_dir, "snap_normal.json")
+        snapshot_mod.save_snapshot(self.db_path, "iso_normal", snapshot_path)
+
+        new_work_dir = os.path.join(self.work_dir, "normal_work")
+        os.makedirs(new_work_dir, exist_ok=True)
+        new_db_path = db.get_db_path(new_work_dir)
+        db.init_db(new_db_path)
+
+        restored_batch, count = snapshot_mod.restore_snapshot(new_db_path, snapshot_path)
+        self.assertEqual(restored_batch, "iso_normal")
+        self.assertEqual(count, 3)
+
+        new_batch = db.get_batch_by_no(new_db_path, restored_batch)
+        items = db.get_evidence_items(new_db_path, new_batch["id"])
+
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self.assertGreater(len(pending), 0)
+
+        log_id = db.review_item(
+            new_db_path,
+            batch_id=new_batch["id"],
+            item_id=pending[0]["id"],
+            new_status="signed",
+            remark="恢复后复核",
+            operator="tester_new",
+            action="review",
+        )
+        self.assertIsInstance(log_id, int)
+        self.assertGreater(log_id, 0)
+
+        undo = db.undo_last_review(new_db_path, new_batch["id"], operator="tester_new")
+        self.assertIsNotNone(undo)
+        self.assertEqual(undo["action"], "review")
+
+        from evidence_cli import report as report_mod
+        export_path = os.path.join(new_work_dir, "regression_export.json")
+        export_count = report_mod.export_json(
+            db.get_evidence_items(new_db_path, new_batch["id"]),
+            export_path,
+            batch_info=new_batch,
+        )
+        self.assertGreater(export_count, 0)
+        self.assertTrue(os.path.exists(export_path))
+
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        self.assertEqual(export_data["batch"]["batch_no"], "iso_normal")
+        self.assertEqual(len(export_data["items"]), count)
 
 
 if __name__ == "__main__":
