@@ -1159,3 +1159,291 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
         "warnings": warnings,
         "has_restore_chain": has_chain,
     }
+
+
+def build_command_chain(db_path: str, batch_no: str) -> Optional[Dict]:
+    """
+    基于持久化数据生成恢复核对命令链。
+
+    返回 None 表示批次不存在。
+
+    返回结构:
+        {
+            "batch_no": str,
+            "recovery_summary": dict,        # 统一恢复摘要
+            "trace_data": dict,              # 完整 trace 数据
+            "scenario": str,                 # 当前场景描述
+            "steps": [                        # 命令链步骤（按推荐顺序）
+                {
+                    "order": int,
+                    "name": str,             # 步骤名（预演恢复 / 正式恢复 / 追链 / 继续复核 / 撤销 / 导出 等）
+                    "description": str,      # 步骤说明
+                    "required": bool,        # 是否必填步骤
+                    "command": str,          # 可直接复制执行的完整命令
+                    "required_options": [    # 必填选项说明
+                        {"option": str, "value": str, "reason": str},
+                        ...
+                    ],
+                    "optional_options": [    # 可选选项说明
+                        {"option": str, "value": str, "reason": str},
+                        ...
+                    ],
+                    "applicable": bool,      # 该步骤在当前场景下是否适用
+                    "applicable_reason": str, # 不适用时的原因
+                },
+                ...
+            ],
+            "warnings": List[str],           # 与其他命令对齐的告警
+        }
+    """
+    from . import db as db_mod
+
+    batch = db_mod.get_batch_by_no(db_path, batch_no)
+    if not batch:
+        return None
+
+    recovery_summary = build_recovery_summary(db_path, batch_no)
+    trace_data = build_trace(db_path, batch_no)
+
+    has_restore = recovery_summary.get("has_restore", False)
+    was_force = recovery_summary.get("restore_event", {}).get("was_force", False) if recovery_summary.get("restore_event") else False
+    was_remapped = recovery_summary.get("restore_event", {}).get("was_remapped", False) if recovery_summary.get("restore_event") else False
+    snapshot_exists = recovery_summary.get("source_snapshot", {}).get("exists", False) if recovery_summary.get("source_snapshot") else False
+    snapshot_path = recovery_summary.get("source_snapshot", {}).get("path", "") if recovery_summary.get("source_snapshot") else ""
+    post_op_count = recovery_summary.get("post_restore_ops", {}).get("count", 0)
+    reconciled = recovery_summary.get("reconciled", False)
+    manifest_path = batch.get("manifest_path", "")
+    evidence_dir = batch.get("evidence_dir", "")
+
+    warnings: List[str] = list(recovery_summary.get("warnings", []))
+
+    scenario_parts = []
+    if not has_restore:
+        scenario_parts.append("原始导入批次，未从快照恢复")
+    else:
+        if was_force:
+            scenario_parts.append("强制覆盖恢复")
+        else:
+            scenario_parts.append("普通恢复")
+        if was_remapped:
+            scenario_parts.append("目录重映射")
+        if not snapshot_exists:
+            scenario_parts.append("来源快照丢失")
+        if post_op_count > 0:
+            scenario_parts.append(f"恢复后追加 {post_op_count} 条操作")
+        if not reconciled:
+            scenario_parts.append("对账告警")
+    scenario = "、".join(scenario_parts) if scenario_parts else "未知场景"
+
+    steps: List[Dict] = []
+    order = 0
+
+    if not has_restore:
+        order += 1
+        steps.append({
+            "order": order,
+            "name": "预演恢复",
+            "description": "从快照预演恢复到当前工作目录，不修改数据库，仅显示恢复摘要",
+            "required": False,
+            "command": f"evi snapshot restore -s <快照文件路径> --dry-run",
+            "required_options": [
+                {"option": "-s / --snapshot", "value": "<快照文件路径>", "reason": "指定要恢复的快照 JSON 文件"},
+            ],
+            "optional_options": [
+                {"option": "-e / --evidence-dir", "value": "<新证据目录>", "reason": "若快照记录的证据目录已不存在，使用此选项重映射"},
+                {"option": "-f / --force", "value": "", "reason": "若同名批次已存在，使用此选项强制覆盖（仅 dry-run 时预览差异）"},
+                {"option": "-o / --operator", "value": "<操作人>", "reason": "记录恢复操作人"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        steps.append({
+            "order": order,
+            "name": "正式恢复",
+            "description": "从快照正式恢复批次到当前工作目录的数据库",
+            "required": True,
+            "command": f"evi snapshot restore -s <快照文件路径>",
+            "required_options": [
+                {"option": "-s / --snapshot", "value": "<快照文件路径>", "reason": "指定要恢复的快照 JSON 文件"},
+            ],
+            "optional_options": [
+                {"option": "-e / --evidence-dir", "value": "<新证据目录>", "reason": "重映射证据目录路径"},
+                {"option": "-f / --force", "value": "", "reason": "若同名批次已存在，必须使用此选项强制覆盖"},
+                {"option": "-o / --operator", "value": "<操作人>", "reason": "记录恢复操作人"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+    if has_restore:
+        order += 1
+        steps.append({
+            "order": order,
+            "name": "查看恢复摘要",
+            "description": "显示批次的统一恢复摘要，与 trace/list/resume/export 使用同一份持久化数据",
+            "required": True,
+            "command": f"evi resume -b {batch_no}",
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+            ],
+            "optional_options": [
+                {"option": "-n / --show-items", "value": "<N>", "reason": "显示最近 N 条复核历史（默认 10）"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        steps.append({
+            "order": order,
+            "name": "恢复链路追踪",
+            "description": "查看完整恢复链路：每次恢复的父子关系、快照文件状态、目录映射、覆盖差异、恢复后操作明细",
+            "required": True,
+            "command": f"evi trace -b {batch_no}",
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+            ],
+            "optional_options": [],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        steps.append({
+            "order": order,
+            "name": "批次列表概览",
+            "description": "在批次列表中查看该批次的恢复标记、进度、告警，与其他批次横向对比",
+            "required": False,
+            "command": "evi list",
+            "required_options": [],
+            "optional_options": [],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        precheck_cmd = f"evi precheck -b {batch_no}"
+        steps.append({
+            "order": order,
+            "name": "完整性预检",
+            "description": "核对证据文件的路径、大小、SHA256 是否与清单一致（只读不修改证据文件）",
+            "required": False,
+            "command": precheck_cmd,
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+            ],
+            "optional_options": [
+                {"option": "-i / --item", "value": "<证据项ID>", "reason": "只检查指定证据项"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        review_cmd = f"evi review -b {batch_no} -i <证据项ID> -s <signed|supplement> -r <备注>"
+        steps.append({
+            "order": order,
+            "name": "继续复核",
+            "description": "对恢复后的批次继续复核，标记为已签收或待补件",
+            "required": False,
+            "command": review_cmd,
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+                {"option": "-i / --item", "value": "<证据项ID>", "reason": "要复核的证据项 ID（可用 evi status 查看）"},
+                {"option": "-s / --status", "value": "<signed|supplement>", "reason": "复核状态：signed=已签收，supplement=待补件"},
+            ],
+            "optional_options": [
+                {"option": "-r / --remark", "value": "<备注>", "reason": "复核备注"},
+                {"option": "-o / --operator", "value": "<操作人>", "reason": "记录操作人"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        undo_cmd = f"evi undo -b {batch_no}"
+        steps.append({
+            "order": order,
+            "name": "撤销复核",
+            "description": "撤销最后一条复核操作，恢复之前的状态和备注",
+            "required": False,
+            "command": undo_cmd,
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+            ],
+            "optional_options": [
+                {"option": "-o / --operator", "value": "<操作人>", "reason": "记录撤销操作人"},
+            ],
+            "applicable": post_op_count > 0,
+            "applicable_reason": "" if post_op_count > 0 else "当前批次恢复后暂无任何操作，无可撤销内容",
+        })
+
+        order += 1
+        status_cmd = f"evi status -b {batch_no}"
+        steps.append({
+            "order": order,
+            "name": "查看证据项状态",
+            "description": "列出批次所有证据项的预检和复核状态，方便找到待处理项",
+            "required": False,
+            "command": status_cmd,
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+            ],
+            "optional_options": [
+                {"option": "-f / --filter", "value": "<all|pending|signed|supplement|failed_precheck>", "reason": "按状态筛选"},
+                {"option": "-n / --limit", "value": "<N>", "reason": "最多显示数量（默认 20）"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        order += 1
+        export_cmd = f"evi export -b {batch_no} -o <输出路径> -f json"
+        steps.append({
+            "order": order,
+            "name": "导出 JSON 报告",
+            "description": "导出包含恢复摘要、恢复链路、证据项状态的完整 JSON 报告",
+            "required": False,
+            "command": export_cmd,
+            "required_options": [
+                {"option": "-b / --batch", "value": batch_no, "reason": "批次号（与当前核对批次一致）"},
+                {"option": "-o / --output", "value": "<输出路径>", "reason": "导出文件路径（建议 .json 后缀）"},
+                {"option": "-f / --format", "value": "json", "reason": "导出格式，json 格式包含完整恢复链路和摘要"},
+            ],
+            "optional_options": [
+                {"option": "-f / --format", "value": "csv", "reason": "仅导出 CSV 格式的证据项状态（不含恢复摘要和链路）"},
+            ],
+            "applicable": True,
+            "applicable_reason": "",
+        })
+
+        if snapshot_exists and was_force:
+            order += 1
+            steps.append({
+                "order": order,
+                "name": "再次预演（校验强制覆盖场景）",
+                "description": "对已强制覆盖的批次，再次用同一份快照做 dry-run 预演，确认覆盖差异与记录一致",
+                "required": False,
+                "command": f"evi snapshot restore -s {snapshot_path} --force --dry-run",
+                "required_options": [
+                    {"option": "-s / --snapshot", "value": snapshot_path, "reason": "与原恢复使用同一份快照文件"},
+                    {"option": "-f / --force", "value": "", "reason": "必须与原恢复方式一致，才能看到相同的覆盖差异"},
+                    {"option": "--dry-run", "value": "", "reason": "仅预演，不修改数据库"},
+                ],
+                "optional_options": [
+                    {"option": "-e / --evidence-dir", "value": evidence_dir, "reason": "如原恢复使用了重映射，此处也应使用相同路径"},
+                ],
+                "applicable": True,
+                "applicable_reason": "",
+            })
+
+    return {
+        "batch_no": batch_no,
+        "recovery_summary": recovery_summary,
+        "trace_data": trace_data,
+        "scenario": scenario,
+        "steps": steps,
+        "warnings": warnings,
+    }

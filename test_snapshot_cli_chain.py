@@ -950,5 +950,537 @@ class TestSnapshotCLIChain(unittest.TestCase):
         print("\n[OK] 测试8通过")
 
 
+    def test_09_check_original_batch(self):
+        """测试9: 原始导入批次（未恢复）的 snapshot check 输出"""
+        print("\n" + "=" * 60)
+        print("测试9: 原始导入批次（未恢复）的 snapshot check 输出")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "check_original")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_orig_check",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "原始批次check测试",
+        ], cwd=work)
+
+        print("\n[步骤1] 原始批次 check 输出包含恢复前命令")
+        result = run_cli(["snapshot", "check", "-b", "batch_orig_check"], cwd=work)
+        self.assertIn("恢复核对命令链", result.stdout)
+        self.assertIn("原始导入批次，未从快照恢复", result.stdout)
+        self.assertIn("预演恢复", result.stdout)
+        self.assertIn("正式恢复", result.stdout)
+        self.assertIn("evi snapshot restore", result.stdout)
+        self.assertIn("--dry-run", result.stdout)
+        self.assertIn("数据来源说明", result.stdout)
+
+        print("\n[步骤2] 不存在的批次 check 应报错")
+        result = run_cli(["snapshot", "check", "-b", "no_such_batch"], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("不存在", result.stdout + result.stderr)
+
+        print("\n[OK] 测试9通过")
+
+    def test_10_check_normal_restore_and_execute_commands(self):
+        """测试10: 普通恢复后的 snapshot check 并真跑生成的命令链"""
+        print("\n" + "=" * 60)
+        print("测试10: 普通恢复后的 snapshot check 并真跑生成的命令链")
+        print("=" * 60)
+
+        work_a = os.path.join(self.base_dir, "check_norm_src")
+        work_b = os.path.join(self.base_dir, "check_norm_dst")
+        os.makedirs(work_a)
+        os.makedirs(work_b)
+
+        run_cli(["init"], cwd=work_a)
+        fixture = self._create_evidence_fixture(work_a)
+        run_cli([
+            "import", "-b", "batch_check_norm",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "普通恢复check测试",
+        ], cwd=work_a)
+        run_cli([
+            "review", "-b", "batch_check_norm", "-i", "1",
+            "-s", "signed", "-r", "src复核", "-o", "srcop",
+        ], cwd=work_a)
+
+        snap = os.path.join(work_a, "snap_check_norm.json")
+        run_cli(["snapshot", "save", "-b", "batch_check_norm", "-o", snap], cwd=work_a)
+
+        run_cli(["init"], cwd=work_b)
+        run_cli([
+            "snapshot", "restore", "-s", snap,
+            "-e", fixture["evidence_dir"], "-o", "restoreop",
+        ], cwd=work_b)
+
+        print("\n[步骤1] 恢复后 check 输出包含恢复摘要和命令链")
+        result = run_cli(["snapshot", "check", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("普通恢复", result.stdout)
+        self.assertIn("恢复核对命令链", result.stdout)
+        self.assertIn("查看恢复摘要", result.stdout)
+        self.assertIn("恢复链路追踪", result.stdout)
+        self.assertIn("批次列表概览", result.stdout)
+        self.assertIn("完整性预检", result.stdout)
+        self.assertIn("继续复核", result.stdout)
+        self.assertIn("导出 JSON 报告", result.stdout)
+        self.assertIn(f"evi resume -b batch_check_norm", result.stdout)
+        self.assertIn(f"evi trace -b batch_check_norm", result.stdout)
+        self.assertIn("与 trace/list/resume/export 使用同一份持久化数据", result.stdout)
+
+        print("\n[步骤2] 真跑 check 中列出的 resume 命令")
+        resume_result = run_cli(["resume", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("来源快照", resume_result.stdout)
+        self.assertIn("操作人: restoreop", resume_result.stdout)
+        self.assertIn("已签收: 1", resume_result.stdout)
+
+        print("\n[步骤3] 真跑 check 中列出的 trace 命令")
+        trace_result = run_cli(["trace", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("恢复链路：共 1 次恢复", trace_result.stdout)
+        self.assertIn("操作人: restoreop", trace_result.stdout)
+        self.assertIn("来源快照", trace_result.stdout)
+
+        print("\n[步骤4] 真跑 check 中列出的 list 命令")
+        list_result = run_cli(["list"], cwd=work_b)
+        self.assertIn("batch_check_norm", list_result.stdout)
+        self.assertIn("已恢复", list_result.stdout)
+
+        print("\n[步骤5] 真跑 check 中列出的 review 命令（继续复核）")
+        run_cli([
+            "review", "-b", "batch_check_norm", "-i", "2",
+            "-s", "supplement", "-r", "check后复核", "-o", "postop",
+        ], cwd=work_b)
+
+        print("\n[步骤6] 真跑 check 中列出的 precheck 命令")
+        precheck_result = run_cli(["precheck", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("预检完成", precheck_result.stdout)
+
+        print("\n[步骤7] 真跑 check 中列出的 undo 命令（此时恢复后有操作，undo 应适用）")
+        check_after_review = run_cli(["snapshot", "check", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("撤销复核", check_after_review.stdout)
+        self.assertNotIn("无可撤销内容", check_after_review.stdout)
+
+        undo_result = run_cli(["undo", "-b", "batch_check_norm", "-o", "undoop"], cwd=work_b)
+        self.assertIn("撤销成功", undo_result.stdout)
+
+        print("\n[步骤8] 真跑 check 中列出的 status 命令")
+        status_result = run_cli(["status", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("共 3 条", status_result.stdout)
+
+        print("\n[步骤9] 真跑 check 中列出的 export 命令")
+        export_path = os.path.join(work_b, "check_norm_export.json")
+        run_cli([
+            "export", "-b", "batch_check_norm",
+            "-o", export_path, "-f", "json",
+        ], cwd=work_b)
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        self.assertIn("restore_trace", export_data)
+        self.assertIn("batch", export_data)
+        self.assertEqual(export_data["batch"]["batch_no"], "batch_check_norm")
+
+        print("\n[步骤10] 重启 CLI 后 check 输出一致（跨进程持久化验证）")
+        result2 = run_cli(["snapshot", "check", "-b", "batch_check_norm"], cwd=work_b)
+        self.assertIn("恢复核对命令链", result2.stdout)
+        self.assertIn("普通恢复", result2.stdout)
+        self.assertIn(f"evi resume -b batch_check_norm", result2.stdout)
+
+        print("\n[OK] 测试10通过")
+
+    def test_11_check_force_restore_and_execute_commands(self):
+        """测试11: 强制覆盖恢复后的 snapshot check 并真跑命令链"""
+        print("\n" + "=" * 60)
+        print("测试11: 强制覆盖恢复后的 snapshot check 并真跑命令链")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "check_force")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        print("\n[步骤1] 创建旧批次")
+        fixture_old = self._create_evidence_fixture(os.path.join(work, "old"))
+        run_cli([
+            "import", "-b", "batch_check_force",
+            "-m", fixture_old["manifest_path"],
+            "-e", fixture_old["evidence_dir"],
+            "-d", "旧批次（被覆盖）",
+        ], cwd=work)
+        run_cli([
+            "review", "-b", "batch_check_force", "-i", "1",
+            "-s", "signed", "-r", "旧复核1", "-o", "oldop",
+        ], cwd=work)
+        run_cli([
+            "review", "-b", "batch_check_force", "-i", "2",
+            "-s", "signed", "-r", "旧复核2", "-o", "oldop",
+        ], cwd=work)
+
+        print("\n[步骤2] 在独立目录创建新批次快照")
+        snap_work = os.path.join(self.base_dir, "check_force_src")
+        os.makedirs(snap_work)
+        run_cli(["init"], cwd=snap_work)
+        fixture_new = self._create_evidence_fixture(os.path.join(snap_work, "new"))
+        run_cli([
+            "import", "-b", "batch_check_force",
+            "-m", fixture_new["manifest_path"],
+            "-e", fixture_new["evidence_dir"],
+            "-d", "新批次（覆盖用）",
+        ], cwd=snap_work)
+        run_cli([
+            "review", "-b", "batch_check_force", "-i", "1",
+            "-s", "supplement", "-r", "新复核", "-o", "newop",
+        ], cwd=snap_work)
+        snap = os.path.join(work, "snap_check_force.json")
+        run_cli(["snapshot", "save", "-b", "batch_check_force", "-o", snap], cwd=snap_work)
+
+        print("\n[步骤3] 强制覆盖恢复")
+        run_cli([
+            "snapshot", "restore", "-s", snap,
+            "-e", fixture_new["evidence_dir"],
+            "--force", "-o", "forceop",
+        ], cwd=work)
+
+        print("\n[步骤4] check 输出包含强制覆盖场景和再次预演命令")
+        result = run_cli(["snapshot", "check", "-b", "batch_check_force"], cwd=work)
+        self.assertIn("强制覆盖恢复", result.stdout)
+        self.assertIn("覆盖差异", result.stdout)
+        self.assertIn("再次预演", result.stdout)
+        self.assertIn("--force --dry-run", result.stdout)
+        self.assertIn("与原恢复使用同一份快照文件", result.stdout)
+
+        print("\n[步骤5] 真跑 check 中列出的 resume 命令，验证覆盖差异")
+        resume_result = run_cli(["resume", "-b", "batch_check_force"], cwd=work)
+        self.assertIn("覆盖差异", resume_result.stdout)
+        self.assertIn("旧批次（被覆盖）", resume_result.stdout)
+        self.assertIn("新批次（覆盖用）", resume_result.stdout)
+        self.assertIn("已签收 2 → 0", resume_result.stdout)
+
+        print("\n[步骤6] 在新的干净工作目录真跑 check 中列出的再次预演命令")
+        preview_dir = os.path.join(self.base_dir, "check_force_preview")
+        os.makedirs(preview_dir)
+        run_cli(["init"], cwd=preview_dir)
+        fixture_old2 = self._create_evidence_fixture(os.path.join(preview_dir, "old"))
+        run_cli([
+            "import", "-b", "batch_check_force",
+            "-m", fixture_old2["manifest_path"],
+            "-e", fixture_old2["evidence_dir"],
+            "-d", "旧批次（被覆盖）",
+        ], cwd=preview_dir)
+        run_cli([
+            "review", "-b", "batch_check_force", "-i", "1",
+            "-s", "signed", "-r", "旧复核1", "-o", "oldop",
+        ], cwd=preview_dir)
+        run_cli([
+            "review", "-b", "batch_check_force", "-i", "2",
+            "-s", "signed", "-r", "旧复核2", "-o", "oldop",
+        ], cwd=preview_dir)
+        dry_run_result = run_cli([
+            "snapshot", "restore", "-s", snap,
+            "--force", "--dry-run",
+        ], cwd=preview_dir)
+        self.assertIn("恢复预演", dry_run_result.stdout)
+        self.assertIn("覆盖差异", dry_run_result.stdout)
+        self.assertIn("已签收 2 → 0", dry_run_result.stdout)
+        self.assertIn("可以恢复", dry_run_result.stdout)
+
+        print("\n[步骤7] 真跑 check 中列出的 trace 命令，验证链路")
+        trace_result = run_cli(["trace", "-b", "batch_check_force"], cwd=work)
+        self.assertIn("强制覆盖", trace_result.stdout)
+        self.assertIn("覆盖前批次", trace_result.stdout)
+        self.assertIn("旧批次（被覆盖）", trace_result.stdout)
+
+        print("\n[OK] 测试11通过")
+
+    def test_12_check_snapshot_missing_warnings(self):
+        """测试12: 来源快照丢失时 snapshot check 的告警对齐"""
+        print("\n" + "=" * 60)
+        print("测试12: 来源快照丢失时 snapshot check 的告警对齐")
+        print("=" * 60)
+
+        src = os.path.join(self.base_dir, "check_miss_src")
+        dst = os.path.join(self.base_dir, "check_miss_dst")
+        os.makedirs(src)
+        os.makedirs(dst)
+
+        run_cli(["init"], cwd=src)
+        fixture = self._create_evidence_fixture(src)
+        run_cli([
+            "import", "-b", "batch_miss",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "快照丢失测试",
+        ], cwd=src)
+        run_cli([
+            "review", "-b", "batch_miss", "-i", "1",
+            "-s", "signed", "-r", "签一条", "-o", "op1",
+        ], cwd=src)
+
+        snap = os.path.join(self.base_dir, "snap_miss.json")
+        run_cli(["snapshot", "save", "-b", "batch_miss", "-o", snap], cwd=src)
+
+        run_cli(["init"], cwd=dst)
+        run_cli([
+            "snapshot", "restore", "-s", snap,
+            "-e", fixture["evidence_dir"], "-o", "restoreop",
+        ], cwd=dst)
+
+        print("\n[步骤1] 删除快照前 check 显示 OK")
+        before = run_cli(["snapshot", "check", "-b", "batch_miss"], cwd=dst)
+        self.assertIn("[OK]", before.stdout)
+        self.assertNotIn("MISSING", before.stdout)
+
+        print("\n[步骤2] 删除快照文件")
+        os.remove(snap)
+        self.assertFalse(os.path.exists(snap))
+
+        print("\n[步骤3] check 的告警与 trace/list/resume 对齐")
+        check_result = run_cli(["snapshot", "check", "-b", "batch_miss"], cwd=dst)
+        self.assertIn("来源快照丢失", check_result.stdout)
+        self.assertIn("MISSING", check_result.stdout)
+        self.assertIn("[!] 告警", check_result.stdout)
+        self.assertIn("来源快照文件已不存在", check_result.stdout)
+
+        print("\n[步骤4] trace 命令同样显示 MISSING 告警")
+        trace_result = run_cli(["trace", "-b", "batch_miss"], cwd=dst)
+        self.assertIn("MISSING", trace_result.stdout)
+        self.assertIn("[!]", trace_result.stdout)
+
+        print("\n[步骤5] list 命令同样显示 MISSING 告警")
+        list_result = run_cli(["list"], cwd=dst)
+        self.assertIn("MISSING", list_result.stdout)
+
+        print("\n[步骤6] resume 命令同样显示 MISSING")
+        resume_result = run_cli(["resume", "-b", "batch_miss"], cwd=dst)
+        self.assertIn("MISSING", resume_result.stdout)
+
+        print("\n[步骤7] export JSON 中 snapshot_exists=false 与 CLI 一致")
+        export_path = os.path.join(dst, "miss_export.json")
+        run_cli([
+            "export", "-b", "batch_miss",
+            "-o", export_path, "-f", "json",
+        ], cwd=dst)
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        rt = export_data["restore_trace"]
+        self.assertFalse(rt["events"][0]["snapshot_exists"])
+
+        print("\n[OK] 测试12通过")
+
+    def test_13_check_post_restore_activity(self):
+        """测试13: 恢复后追加操作时 snapshot check 的提示与数据对齐"""
+        print("\n" + "=" * 60)
+        print("测试13: 恢复后追加操作时 snapshot check 的提示与数据对齐")
+        print("=" * 60)
+
+        src = os.path.join(self.base_dir, "check_post_src")
+        dst = os.path.join(self.base_dir, "check_post_dst")
+        os.makedirs(src)
+        os.makedirs(dst)
+
+        run_cli(["init"], cwd=src)
+        fixture = self._create_evidence_fixture(src)
+        run_cli([
+            "import", "-b", "batch_post",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "恢复后操作测试",
+        ], cwd=src)
+
+        snap = os.path.join(src, "snap_post.json")
+        run_cli(["snapshot", "save", "-b", "batch_post", "-o", snap], cwd=src)
+
+        run_cli(["init"], cwd=dst)
+        run_cli([
+            "snapshot", "restore", "-s", snap,
+            "-e", fixture["evidence_dir"], "-o", "restoreop",
+        ], cwd=dst)
+
+        print("\n[步骤1] 恢复后未操作时 check 不显示追加操作")
+        before = run_cli(["snapshot", "check", "-b", "batch_post"], cwd=dst)
+        self.assertIn("恢复后新增操作: 0 条", before.stdout)
+
+        print("\n[步骤2] 追加 2 条复核 + 1 条撤销")
+        run_cli([
+            "review", "-b", "batch_post", "-i", "1",
+            "-s", "signed", "-r", "后操作1", "-o", "post1",
+        ], cwd=dst)
+        run_cli([
+            "review", "-b", "batch_post", "-i", "2",
+            "-s", "supplement", "-r", "后操作2", "-o", "post2",
+        ], cwd=dst)
+        run_cli(["undo", "-b", "batch_post", "-o", "undopost"], cwd=dst)
+
+        print("\n[步骤3] check 显示恢复后追加 3 条操作（2 review + 1 undo）")
+        after = run_cli(["snapshot", "check", "-b", "batch_post"], cwd=dst)
+        self.assertIn("恢复后追加 3 条操作", after.stdout)
+
+        print("\n[步骤4] check 的操作计数与 trace 对齐")
+        trace_result = run_cli(["trace", "-b", "batch_post"], cwd=dst)
+        self.assertIn("恢复后追加操作（共 3 条）", trace_result.stdout)
+
+        print("\n[步骤5] check 的操作计数与 list 对齐")
+        list_result = run_cli(["list"], cwd=dst)
+        self.assertIn("恢复后操作: 3 条", list_result.stdout)
+
+        print("\n[步骤6] check 的操作计数与 resume 对齐")
+        resume_result = run_cli(["resume", "-b", "batch_post"], cwd=dst)
+        self.assertIn("恢复后有 3 条新操作", resume_result.stdout)
+
+        print("\n[步骤7] export JSON 中 modified_after_restore=true 与操作计数一致")
+        export_path = os.path.join(dst, "post_export.json")
+        run_cli([
+            "export", "-b", "batch_post",
+            "-o", export_path, "-f", "json",
+        ], cwd=dst)
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        rt = export_data["restore_trace"]
+        self.assertTrue(rt["modified_after_restore"])
+        self.assertEqual(len(rt["post_restore_activity"]), 3)
+
+        print("\n[步骤8] 重启后 check 数据一致")
+        result2 = run_cli(["snapshot", "check", "-b", "batch_post"], cwd=dst)
+        self.assertIn("恢复后追加 3 条操作", result2.stdout)
+
+        print("\n[OK] 测试13通过")
+
+    def test_14_check_remapped_evidence_dir(self):
+        """测试14: 目录重映射恢复时 snapshot check 的提示"""
+        print("\n" + "=" * 60)
+        print("测试14: 目录重映射恢复时 snapshot check 的提示")
+        print("=" * 60)
+
+        src = os.path.join(self.base_dir, "check_remap_src")
+        dst = os.path.join(self.base_dir, "check_remap_dst")
+        mapped = os.path.join(self.base_dir, "check_remapped")
+        os.makedirs(src)
+        os.makedirs(dst)
+
+        run_cli(["init"], cwd=src)
+        fixture = self._create_evidence_fixture(src)
+        run_cli([
+            "import", "-b", "batch_remap_check",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "重映射check测试",
+        ], cwd=src)
+        run_cli([
+            "review", "-b", "batch_remap_check", "-i", "1",
+            "-s", "signed", "-r", "源目录复核", "-o", "srcop",
+        ], cwd=src)
+
+        shutil.copytree(fixture["evidence_dir"], mapped)
+        snap = os.path.join(src, "snap_remap_check.json")
+        run_cli(["snapshot", "save", "-b", "batch_remap_check", "-o", snap], cwd=src)
+
+        shutil.rmtree(fixture["evidence_dir"])
+        run_cli(["init"], cwd=dst)
+        run_cli([
+            "snapshot", "restore", "-s", snap,
+            "-e", mapped, "-o", "remapop",
+        ], cwd=dst)
+
+        print("\n[步骤1] check 显示目录重映射场景")
+        result = run_cli(["snapshot", "check", "-b", "batch_remap_check"], cwd=dst)
+        self.assertIn("目录重映射", result.stdout)
+
+        print("\n[步骤2] check 列出的 resume 命令显示重映射证据目录")
+        resume_result = run_cli(["resume", "-b", "batch_remap_check"], cwd=dst)
+        self.assertIn(mapped, resume_result.stdout)
+
+        print("\n[步骤3] check 列出的 trace 命令显示目录重映射")
+        trace_result = run_cli(["trace", "-b", "batch_remap_check"], cwd=dst)
+        self.assertIn("目录重映射", trace_result.stdout)
+        self.assertIn(fixture["evidence_dir"], trace_result.stdout)
+        self.assertIn(mapped, trace_result.stdout)
+
+        print("\n[OK] 测试14通过")
+
+    def test_15_check_help_and_doc_consistency(self):
+        """测试15: 帮助输出、check 命令、实际 CLI 三者一致"""
+        print("\n" + "=" * 60)
+        print("测试15: 帮助输出、check 命令、实际 CLI 三者一致")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "check_help")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_help_check",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "帮助一致性测试",
+        ], cwd=work)
+
+        print("\n[步骤1] 顶层 help 列出 snapshot 命令")
+        top_help = run_cli(["--help"], cwd=work)
+        self.assertIn("snapshot", top_help.stdout)
+        self.assertIn("resume", top_help.stdout)
+        self.assertIn("trace", top_help.stdout)
+        self.assertIn("list", top_help.stdout)
+        self.assertIn("export", top_help.stdout)
+        self.assertIn("review", top_help.stdout)
+        self.assertIn("undo", top_help.stdout)
+        self.assertIn("precheck", top_help.stdout)
+        self.assertIn("status", top_help.stdout)
+
+        print("\n[步骤2] snapshot help 列出 check 子命令")
+        snap_help = run_cli(["snapshot", "--help"], cwd=work)
+        self.assertIn("check", snap_help.stdout)
+        self.assertIn("save", snap_help.stdout)
+        self.assertIn("restore", snap_help.stdout)
+        self.assertIn("list", snap_help.stdout)
+
+        print("\n[步骤3] snapshot check --help 显示正确参数")
+        check_help = run_cli(["snapshot", "check", "--help"], cwd=work)
+        self.assertIn("--batch", check_help.stdout)
+        self.assertIn("-b", check_help.stdout)
+
+        print("\n[步骤4] 对恢复后的批次，check 列出的所有命令都能实际执行")
+        src2 = os.path.join(self.base_dir, "check_help_src")
+        dst2 = os.path.join(self.base_dir, "check_help_dst")
+        os.makedirs(src2)
+        os.makedirs(dst2)
+        run_cli(["init"], cwd=src2)
+        fixture2 = self._create_evidence_fixture(src2)
+        run_cli([
+            "import", "-b", "batch_help_chain",
+            "-m", fixture2["manifest_path"],
+            "-e", fixture2["evidence_dir"],
+            "-d", "命令链帮助测试",
+        ], cwd=src2)
+        run_cli([
+            "review", "-b", "batch_help_chain", "-i", "1",
+            "-s", "signed", "-r", "测试", "-o", "helpop",
+        ], cwd=src2)
+        snap2 = os.path.join(src2, "snap_help_chain.json")
+        run_cli(["snapshot", "save", "-b", "batch_help_chain", "-o", snap2], cwd=src2)
+        run_cli(["init"], cwd=dst2)
+        run_cli([
+            "snapshot", "restore", "-s", snap2,
+            "-e", fixture2["evidence_dir"], "-o", "restorehelp",
+        ], cwd=dst2)
+
+        check_output = run_cli(["snapshot", "check", "-b", "batch_help_chain"], cwd=dst2)
+
+        commands_to_verify = [
+            (["resume", "-b", "batch_help_chain"], "查看恢复摘要"),
+            (["trace", "-b", "batch_help_chain"], "恢复链路追踪"),
+            (["list"], "批次列表概览"),
+            (["precheck", "-b", "batch_help_chain"], "完整性预检"),
+            (["status", "-b", "batch_help_chain"], "查看证据项状态"),
+        ]
+
+        for cmd_args, desc in commands_to_verify:
+            print(f"\n  验证: {desc} -> {' '.join(cmd_args)}")
+            result = run_cli(cmd_args, cwd=dst2)
+            self.assertEqual(result.returncode, 0, f"命令失败: {desc}")
+
+        print("\n[OK] 测试15通过")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

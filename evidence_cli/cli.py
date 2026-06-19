@@ -1116,5 +1116,83 @@ def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir, d
     _format_restore_summary(summary, target_db_path, batch_no)
 
 
+def _format_command_chain(chain_data: Dict) -> None:
+    """格式化输出恢复核对命令链"""
+    recovery_summary = chain_data.get("recovery_summary")
+    if recovery_summary:
+        _format_unified_recovery_summary(
+            recovery_summary,
+            title=f"恢复核对命令链: {chain_data['batch_no']}",
+        )
+    else:
+        click.echo("=" * 60)
+        click.echo(f"恢复核对命令链: {chain_data['batch_no']}")
+        click.echo("=" * 60)
+
+    click.echo(f"当前场景: {chain_data['scenario']}")
+    click.echo("")
+
+    warnings = chain_data.get("warnings", [])
+    if warnings:
+        click.echo("[!] 告警:")
+        for w in warnings:
+            click.echo(f"    {w}")
+        click.echo("")
+
+    steps = chain_data.get("steps", [])
+    applicable_steps = [s for s in steps if s["applicable"]]
+    inapplicable_steps = [s for s in steps if not s["applicable"]]
+
+    click.echo(f"可执行步骤（共 {len(applicable_steps)} 步）:")
+    click.echo("")
+
+    for s in applicable_steps:
+        req_tag = "[必填]" if s["required"] else "[可选]"
+        click.echo(f"--- 步骤 {s['order']} {req_tag} {s['name']} ---")
+        click.echo(f"说明: {s['description']}")
+        click.echo("")
+        click.echo(f"命令: {s['command']}")
+        if s["required_options"]:
+            click.echo("必填选项:")
+            for opt in s["required_options"]:
+                val_str = f"={opt['value']}" if opt["value"] else ""
+                click.echo(f"  {opt['option']}{val_str}  —  {opt['reason']}")
+        if s["optional_options"]:
+            click.echo("可选选项:")
+            for opt in s["optional_options"]:
+                val_str = f"={opt['value']}" if opt["value"] else ""
+                click.echo(f"  {opt['option']}{val_str}  —  {opt['reason']}")
+        click.echo("")
+
+    if inapplicable_steps:
+        click.echo(f"不适用步骤（共 {len(inapplicable_steps)} 步）:")
+        click.echo("")
+        for s in inapplicable_steps:
+            click.echo(f"  步骤 {s['order']} {s['name']}  —  {s['applicable_reason']}")
+        click.echo("")
+
+    click.echo("=" * 60)
+    click.echo("数据来源说明:")
+    click.echo("  以上所有命令和摘要均从 SQLite 持久化数据（batches、restore_events、")
+    click.echo("  evidence_items、review_logs）动态聚合生成，与 list / resume / trace /")
+    click.echo("  export 命令共用同一份数据源，重开 CLI 查询结果完全一致。")
+    click.echo("=" * 60)
+
+
+@snapshot.command("check")
+@click.option("--batch", "-b", "batch_no", required=True, help="批次编号")
+@click.pass_context
+def snapshot_check(ctx, batch_no):
+    """恢复核对入口：列出恢复后所有可执行命令链、摘要、必填选项"""
+    db_path = ensure_db(ctx)
+
+    chain_data = snapshot_mod.build_command_chain(db_path, batch_no)
+    if chain_data is None:
+        click.echo(f"错误: 批次 '{batch_no}' 不存在", err=True)
+        sys.exit(1)
+
+    _format_command_chain(chain_data)
+
+
 if __name__ == "__main__":
     main()
