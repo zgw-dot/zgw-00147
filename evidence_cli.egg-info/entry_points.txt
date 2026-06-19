@@ -1,0 +1,2 @@
+[console_scripts]
+evi = evidence_cli.cli:main

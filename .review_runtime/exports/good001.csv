@@ -1,0 +1,9 @@
+﻿批次号: GOOD-001
+描述: 主流程复核批次
+
+序号,文件路径,清单行号,预期大小,实际大小,预期SHA256,实际SHA256,预检状态,复核状态,复核备注
+1,docs/evidence_a.txt,2,48,48,c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48,c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48,通过,已签收,初次签收备注
+2,docs/evidence_b.txt,3,54,54,c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a,c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a,通过,待处理,
+3,images/screenshot.png,4,38,38,c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4,c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4,通过,待处理,
+4,transaction.csv,5,23,23,e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6,e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6,通过,待处理,
+5,docs/missing_report.pdf,6,2048,0,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,,失败,待补件,缺失文件待补件
