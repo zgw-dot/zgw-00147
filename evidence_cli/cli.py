@@ -11,6 +11,7 @@ from . import manifest as manifest_mod
 from . import precheck as precheck_mod
 from . import report as report_mod
 from . import snapshot as snapshot_mod
+from . import playbook as playbook_mod
 
 
 STATUS_LABELS = {
@@ -1192,6 +1193,303 @@ def snapshot_check(ctx, batch_no):
         sys.exit(1)
 
     _format_command_chain(chain_data)
+
+
+@main.group()
+@click.pass_context
+def playbook(ctx):
+    """批次操作剧本：导入剧本、预演、正式执行、回看历史"""
+    pass
+
+
+@playbook.command("import")
+@click.option("--playbook-file", "-p", "playbook_path", required=True,
+              type=click.Path(exists=True, dir_okay=False), help="剧本 JSON 文件路径")
+@click.pass_context
+def playbook_import(ctx, playbook_path):
+    """导入剧本文件，验证格式和版本"""
+    db_path = ensure_db(ctx)
+    playbook_path = os.path.abspath(playbook_path)
+
+    try:
+        pb = playbook_mod.load_playbook(playbook_path)
+    except playbook_mod.PlaybookVersionError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except playbook_mod.PlaybookFormatError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except playbook_mod.PlaybookError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    batch_no = pb["batch_no"]
+    click.echo(f"剧本导入成功: {playbook_path}")
+    click.echo(f"  版本: {pb['version']}")
+    click.echo(f"  批次: {batch_no}")
+    if pb.get("description"):
+        click.echo(f"  描述: {pb['description']}")
+    if pb.get("operator"):
+        click.echo(f"  操作人: {pb['operator']}")
+    if pb.get("output_file"):
+        click.echo(f"  输出文件: {pb['output_file']}")
+    click.echo(f"  步骤数: {len(pb['steps'])}")
+    click.echo("")
+
+    batch = db.get_batch_by_no(db_path, batch_no)
+    if not batch:
+        click.echo(f"[!] 警告: 批次 '{batch_no}' 不存在，预演和执行将失败")
+    else:
+        click.echo(f"  批次状态: 已签收/待补件/待处理")
+        if "batch_updated_at" not in pb:
+            pb["batch_updated_at"] = batch["updated_at"]
+            with open(playbook_path, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(pb, f, ensure_ascii=False, indent=2)
+            click.echo(f"  已记录批次当前 updated_at 到剧本（用于变更检测）")
+
+    click.echo("")
+    click.echo("步骤列表:")
+    for step in pb["steps"]:
+        desc = _describe_playbook_step(step)
+        click.echo(f"  {step['order']}. {desc}")
+
+    click.echo("")
+    click.echo("提示: 使用 'evi playbook preview -p <剧本文件>' 预演")
+    click.echo("      使用 'evi playbook execute -p <剧本文件>' 正式执行")
+
+
+def _describe_playbook_step(step: Dict) -> str:
+    parts = [f"[{step['type']}]"]
+    if step["type"] == "review":
+        parts.append(f"目标状态: {step.get('target_status', '?')}")
+    if step.get("filter_status"):
+        parts.append(f"筛选: {step['filter_status']}")
+    if step.get("line_range"):
+        parts.append(f"行号: {step['line_range'][0]}-{step['line_range'][1]}")
+    if step.get("remark_template"):
+        parts.append(f"备注模板: {step['remark_template']}")
+    if step.get("operator"):
+        parts.append(f"操作人: {step['operator']}")
+    if step["type"] == "export":
+        parts.append(f"输出: {step.get('output_path', '?')}")
+    return " ".join(parts)
+
+
+@playbook.command("preview")
+@click.option("--playbook-file", "-p", "playbook_path", required=True,
+              type=click.Path(exists=True, dir_okay=False), help="剧本 JSON 文件路径")
+@click.pass_context
+def playbook_preview(ctx, playbook_path):
+    """预演剧本，显示命中的证据项、跳过步骤、覆盖和冲突"""
+    db_path = ensure_db(ctx)
+    playbook_path = os.path.abspath(playbook_path)
+
+    try:
+        pb = playbook_mod.load_playbook(playbook_path)
+    except playbook_mod.PlaybookError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    preview = playbook_mod.preview_playbook(db_path, pb)
+
+    click.echo("=" * 60)
+    click.echo(f"剧本预演: 批次 '{preview['batch_no']}'")
+    click.echo("=" * 60)
+
+    if not preview["can_execute"]:
+        click.echo("[X] 无法执行")
+    else:
+        click.echo("[OK] 可以执行")
+
+    if preview["global_conflicts"]:
+        click.echo("")
+        click.echo("[!] 全局冲突:")
+        for c in preview["global_conflicts"]:
+            click.echo(f"    {c}")
+
+    click.echo("")
+    total_hit = 0
+    total_skip = 0
+    total_overwrite = 0
+    total_conflict = 0
+
+    for sp in preview["steps"]:
+        click.echo(f"--- 步骤 {sp['order']}: {sp['type']} ---")
+
+        matched = sp["matched_items"]
+        skipped = sp["skipped_reasons"]
+        overwrites = sp["will_overwrite"]
+        conflicts = sp["conflicts"]
+
+        total_hit += len(matched)
+        total_skip += len(skipped)
+        total_overwrite += len(overwrites)
+        total_conflict += len(conflicts)
+
+        if matched:
+            click.echo(f"  命中: {len(matched)} 项")
+            for m in matched[:10]:
+                fp = m.get("file_path", "")
+                iid = m.get("id", "?")
+                click.echo(f"    #{iid} {fp}")
+                if m.get("current_status") and m.get("target_status"):
+                    click.echo(f"      {m['current_status']} → {m['target_status']}")
+                if m.get("current_precheck_status"):
+                    click.echo(f"      预检: {m['current_precheck_status']}")
+                if m.get("will_revert_to"):
+                    click.echo(f"      {m.get('current_status', '?')} → {m['will_revert_to']}")
+            if len(matched) > 10:
+                click.echo(f"    ... 还有 {len(matched) - 10} 项")
+
+        if skipped:
+            click.echo(f"  跳过: {len(skipped)} 条")
+            for s in skipped:
+                click.echo(f"    - {s}")
+
+        if overwrites:
+            click.echo(f"  覆盖: {len(overwrites)} 条")
+            for o in overwrites:
+                click.echo(f"    - {o}")
+
+        if conflicts:
+            click.echo(f"  冲突: {len(conflicts)} 条")
+            for c in conflicts:
+                click.echo(f"    [!] {c}")
+
+        click.echo("")
+
+    click.echo("-" * 60)
+    click.echo(f"汇总: 命中 {total_hit} 项, 跳过 {total_skip} 步, "
+               f"覆盖 {total_overwrite} 条, 冲突 {total_conflict} 条")
+
+    if preview["can_execute"]:
+        click.echo("")
+        click.echo("提示: 使用 'evi playbook execute -p <剧本文件>' 正式执行")
+    else:
+        click.echo("")
+        click.echo("请修正上述问题后重试")
+
+    click.echo("=" * 60)
+
+    if not preview["can_execute"]:
+        sys.exit(1)
+
+
+@playbook.command("execute")
+@click.option("--playbook-file", "-p", "playbook_path", required=True,
+              type=click.Path(exists=True, dir_okay=False), help="剧本 JSON 文件路径")
+@click.option("--operator", "-o", default=None, help="覆盖剧本中的操作人")
+@click.option("--force", "-f", is_flag=True,
+              help="强制执行（跳过批次修改检测和输出文件冲突）")
+@click.pass_context
+def playbook_execute(ctx, playbook_path, operator, force):
+    """正式执行剧本，每步结果落 SQLite 日志"""
+    db_path = ensure_db(ctx)
+    playbook_path = os.path.abspath(playbook_path)
+
+    try:
+        pb = playbook_mod.load_playbook(playbook_path)
+    except playbook_mod.PlaybookError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    try:
+        result = playbook_mod.execute_playbook(
+            db_path, pb, operator=operator, force=force,
+        )
+    except playbook_mod.PlaybookConflictError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except playbook_mod.PlaybookStepError as e:
+        click.echo(f"执行失败: {e}", err=True)
+        sys.exit(1)
+
+    click.echo("=" * 60)
+    click.echo(f"剧本执行: 批次 '{result['batch_no']}'")
+    click.echo(f"运行 ID: #{result['run_id']}")
+    click.echo(f"状态: {result['status']}")
+    click.echo("=" * 60)
+
+    for sr in result["steps"]:
+        status_tag = "[OK]" if sr["status"] == "success" else (
+            "[SKIP]" if sr["status"] == "skipped" else "[FAIL]"
+        )
+        click.echo(f"  步骤 {sr['order']}: {sr['type']} {status_tag}")
+
+        if sr["status"] == "success" and sr.get("affected_items"):
+            for ai in sr["affected_items"]:
+                if sr["type"] == "review":
+                    click.echo(f"    #{ai.get('id', '?')} {ai.get('file_path', '')} "
+                               f"{ai.get('old_status', '')} → {ai.get('new_status', '')}")
+                elif sr["type"] == "precheck":
+                    click.echo(f"    #{ai.get('id', '?')} {ai.get('file_path', '')} "
+                               f"预检: {ai.get('precheck_status', '')}")
+                elif sr["type"] == "undo":
+                    click.echo(f"    #{ai.get('item_id', '?')} {ai.get('file_path', '')} "
+                               f"{ai.get('reverted_from', '')} → {ai.get('reverted_to', '')}")
+                elif sr["type"] == "export":
+                    click.echo(f"    输出: {ai.get('output_path', '')} "
+                               f"({ai.get('format', '')}, {ai.get('count', 0)} 条)")
+
+        if sr["status"] == "failed" and sr.get("error"):
+            click.echo(f"    错误: {sr['error']}")
+
+        if sr["status"] == "skipped":
+            click.echo("    (无匹配项，已跳过)")
+
+    if result["status"] == "rolled_back":
+        click.echo("")
+        click.echo("[!] 剧本执行失败，已回滚前面成功的步骤")
+        if result.get("error"):
+            click.echo(f"    失败原因: {result['error']}")
+
+    click.echo("=" * 60)
+
+    if result["status"] != "completed":
+        sys.exit(1)
+
+
+@playbook.command("history")
+@click.option("--batch", "-b", "batch_no", required=True, help="批次编号")
+@click.option("--limit", "-n", type=int, default=10, help="最多显示数量")
+@click.pass_context
+def playbook_history(ctx, batch_no, limit):
+    """查看批次剧本执行历史，跨进程持久化"""
+    db_path = ensure_db(ctx)
+
+    runs = playbook_mod.get_playbook_history(db_path, batch_no, limit=limit)
+
+    if not runs:
+        click.echo(f"批次 '{batch_no}' 暂无剧本执行记录")
+        return
+
+    click.echo(f"批次 '{batch_no}' 剧本执行历史（共 {len(runs)} 条）:")
+    click.echo("")
+
+    for run in runs:
+        status_tag = {
+            "completed": "[OK]",
+            "failed": "[FAIL]",
+            "executing": "[...]",
+            "rolled_back": "[ROLLBACK]",
+        }.get(run["status"], "[?]")
+        click.echo(f"  运行 #{run['id']} {status_tag} {run['status']}")
+        click.echo(f"    操作人: {run.get('operator') or '(无)'}")
+        click.echo(f"    开始: {format_time(run['started_at'])}")
+        if run.get("finished_at"):
+            click.echo(f"    结束: {format_time(run['finished_at'])}")
+        if run.get("error_message"):
+            click.echo(f"    错误: {run['error_message']}")
+
+        detail = db.get_playbook_run_with_steps(db_path, run["id"])
+        if detail and detail.get("steps"):
+            click.echo(f"    步骤:")
+            for s in detail["steps"]:
+                s_tag = "[OK]" if s["status"] == "success" else (
+                    "[SKIP]" if s["status"] == "skipped" else "[FAIL]"
+                )
+                click.echo(f"      {s['step_order']}. {s['step_type']} {s_tag}")
 
 
 if __name__ == "__main__":

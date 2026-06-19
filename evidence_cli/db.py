@@ -109,6 +109,34 @@ def init_db(db_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_logs_item ON review_logs(item_id);
             CREATE INDEX IF NOT EXISTS idx_restore_batch ON restore_events(batch_id);
             CREATE INDEX IF NOT EXISTS idx_restore_parent ON restore_events(parent_restore_event_id);
+
+            CREATE TABLE IF NOT EXISTS playbook_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_no TEXT NOT NULL,
+                operator TEXT,
+                playbook_data TEXT NOT NULL,
+                fingerprint_before TEXT,
+                status TEXT NOT NULL DEFAULT 'executing',
+                error_message TEXT,
+                started_at REAL NOT NULL,
+                finished_at REAL,
+                FOREIGN KEY (batch_no) REFERENCES batches(batch_no)
+            );
+
+            CREATE TABLE IF NOT EXISTS playbook_step_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                step_order INTEGER NOT NULL,
+                step_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                affected_items TEXT,
+                error_message TEXT,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES playbook_runs(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_playbook_runs_batch ON playbook_runs(batch_no);
+            CREATE INDEX IF NOT EXISTS idx_playbook_steps_run ON playbook_step_logs(run_id);
         """)
 
 
@@ -650,3 +678,125 @@ def get_review_logs_after_time(
             (batch_id, after_ts),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def create_playbook_run(
+    db_path: str,
+    batch_no: str,
+    operator: Optional[str] = None,
+    playbook_data: Optional[Dict] = None,
+    fingerprint_before: Optional[str] = None,
+) -> int:
+    import json as _json
+    now = time.time()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO playbook_runs
+               (batch_no, operator, playbook_data, fingerprint_before, status, started_at)
+               VALUES (?, ?, ?, ?, 'executing', ?)""",
+            (
+                batch_no,
+                operator,
+                _json.dumps(playbook_data, ensure_ascii=False) if playbook_data else None,
+                fingerprint_before,
+                now,
+            ),
+        )
+        return cursor.lastrowid
+
+
+def update_playbook_run_status(
+    db_path: str,
+    run_id: int,
+    status: str,
+    error_message: Optional[str] = None,
+) -> None:
+    now = time.time()
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """UPDATE playbook_runs SET status = ?, error_message = ?, finished_at = ?
+               WHERE id = ?""",
+            (status, error_message, now, run_id),
+        )
+
+
+def log_playbook_step(
+    db_path: str,
+    run_id: int,
+    step_order: int,
+    step_type: str,
+    status: str,
+    affected_items: Optional[List[Dict]] = None,
+    error_message: Optional[str] = None,
+) -> int:
+    import json as _json
+    now = time.time()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO playbook_step_logs
+               (run_id, step_order, step_type, status, affected_items, error_message, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                step_order,
+                step_type,
+                status,
+                _json.dumps(affected_items, ensure_ascii=False) if affected_items else None,
+                error_message,
+                now,
+            ),
+        )
+        return cursor.lastrowid
+
+
+def get_last_playbook_run(
+    db_path: str, batch_no: str,
+) -> Optional[Dict]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM playbook_runs WHERE batch_no = ? ORDER BY id DESC LIMIT 1",
+            (batch_no,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_playbook_runs(
+    db_path: str, batch_no: str, limit: int = 20,
+) -> List[Dict]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM playbook_runs WHERE batch_no = ? ORDER BY id DESC LIMIT ?",
+            (batch_no, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_playbook_run_with_steps(
+    db_path: str, run_id: int,
+) -> Optional[Dict]:
+    import json as _json
+    with get_conn(db_path) as conn:
+        run_row = conn.execute(
+            "SELECT * FROM playbook_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if not run_row:
+            return None
+        run_data = dict(run_row)
+
+        step_rows = conn.execute(
+            "SELECT * FROM playbook_step_logs WHERE run_id = ? ORDER BY step_order ASC",
+            (run_id,),
+        ).fetchall()
+        steps = []
+        for s in step_rows:
+            sd = dict(s)
+            if sd.get("affected_items"):
+                try:
+                    sd["affected_items"] = _json.loads(sd["affected_items"])
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+            steps.append(sd)
+
+        run_data["steps"] = steps
+        return run_data

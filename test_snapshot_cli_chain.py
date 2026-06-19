@@ -1481,6 +1481,550 @@ class TestSnapshotCLIChain(unittest.TestCase):
 
         print("\n[OK] 测试15通过")
 
+    def _write_playbook_json(self, playbook_data: Dict, target_dir: str, name: str = "playbook.json") -> str:
+        path = os.path.join(target_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(playbook_data, f, ensure_ascii=False, indent=2)
+        return path
+
+    def test_16_playbook_full_chain(self):
+        """测试16: 剧本完整流程：导入→预演→执行→撤销→再执行→导出→跨进程重查"""
+        print("\n" + "=" * 60)
+        print("测试16: 剧本完整流程")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_full")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_full",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "剧本全流程测试",
+        ], cwd=work)
+
+        export_path = os.path.join(work, "pb_export.json")
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_full",
+            "description": "全流程剧本测试",
+            "operator": "pb_tester",
+            "output_file": export_path,
+            "created_at": 1700000000.0,
+            "steps": [
+                {"type": "precheck", "order": 1},
+                {"type": "review", "order": 2, "target_status": "signed",
+                 "filter_status": "pending", "remark_template": "批次{batch_no}签收{file_path}"},
+                {"type": "export", "order": 3, "output_path": export_path, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "full_playbook.json")
+
+        print("\n[步骤1] 导入剧本")
+        result = run_cli(["playbook", "import", "-p", pb_path], cwd=work)
+        self.assertIn("剧本导入成功", result.stdout)
+        self.assertIn("batch_pb_full", result.stdout)
+        self.assertIn("步骤数: 3", result.stdout)
+
+        print("\n[步骤2] 预演剧本")
+        result = run_cli(["playbook", "preview", "-p", pb_path], cwd=work)
+        self.assertIn("剧本预演", result.stdout)
+        self.assertIn("可以执行", result.stdout)
+        self.assertIn("命中: 3 项", result.stdout)
+        self.assertIn("pending → signed", result.stdout)
+
+        print("\n[步骤3] 正式执行剧本")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work)
+        self.assertIn("completed", result.stdout)
+        self.assertIn("步骤 1: precheck [OK]", result.stdout)
+        self.assertIn("步骤 2: review [OK]", result.stdout)
+        self.assertIn("步骤 3: export [OK]", result.stdout)
+        self.assertTrue(os.path.exists(export_path))
+
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        self.assertEqual(export_data["statistics"]["review"]["signed"], 3)
+
+        print("\n[步骤4] 撤销一条复核")
+        run_cli(["undo", "-b", "batch_pb_full", "-o", "undo_op"], cwd=work)
+
+        result = run_cli(["resume", "-b", "batch_pb_full"], cwd=work)
+        self.assertIn("已签收: 2", result.stdout)
+        self.assertIn("待处理: 1", result.stdout)
+
+        print("\n[步骤5] 再执行一次剧本（把撤销的那条再签收）")
+        export_path2 = os.path.join(work, "pb_export_v2.json")
+        playbook_data2 = dict(playbook_data)
+        playbook_data2["steps"] = [
+            {"type": "review", "order": 1, "target_status": "signed",
+             "filter_status": "pending"},
+            {"type": "export", "order": 2, "output_path": export_path2, "export_format": "json"},
+        ]
+        playbook_data2["output_file"] = export_path2
+        pb_path2 = self._write_playbook_json(playbook_data2, work, "full_playbook_v2.json")
+
+        result = run_cli(["playbook", "execute", "-p", pb_path2], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        result = run_cli(["resume", "-b", "batch_pb_full"], cwd=work)
+        self.assertIn("已签收: 3", result.stdout)
+
+        print("\n[步骤6] 跨进程重查剧本历史")
+        result = run_cli(["playbook", "history", "-b", "batch_pb_full"], cwd=work)
+        self.assertIn("剧本执行历史", result.stdout)
+        self.assertIn("[OK] completed", result.stdout)
+
+        print("\n[OK] 测试16通过")
+
+    def test_17_playbook_preview_details(self):
+        """测试17: 预演时显示命中的证据项、跳过的步骤、覆盖说明、冲突原因"""
+        print("\n" + "=" * 60)
+        print("测试17: 预演详情验证")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_preview")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_preview",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        run_cli([
+            "review", "-b", "batch_pb_preview", "-i", "1",
+            "-s", "signed", "-r", "已签收", "-o", "op1",
+        ], cwd=work)
+
+        existing_export = os.path.join(work, "existing_export.json")
+        with open(existing_export, "w", encoding="utf-8") as f:
+            f.write("{}")
+
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_preview",
+            "steps": [
+                {"type": "review", "order": 1, "target_status": "signed",
+                 "filter_status": "all",
+                 "remark_template": "复核批次{batch_no}文件{file_path}"},
+                {"type": "review", "order": 2, "target_status": "signed",
+                 "filter_status": "pending"},
+                {"type": "undo", "order": 3},
+                {"type": "export", "order": 4, "output_path": existing_export, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "preview_playbook.json")
+
+        print("\n[步骤1] 预演显示覆盖和冲突信息")
+        result = run_cli(["playbook", "preview", "-p", pb_path], cwd=work)
+        self.assertIn("覆盖", result.stdout)
+        self.assertIn("已经是 signed", result.stdout)
+        self.assertIn("冲突", result.stdout)
+        self.assertIn("输出文件已存在", result.stdout)
+
+        print("\n[步骤2] 预演显示命中项详情和状态转换")
+        self.assertIn("pending → signed", result.stdout)
+
+        print("\n[步骤3] 导入命令显示备注模板")
+        result_import = run_cli(["playbook", "import", "-p", pb_path], cwd=work)
+        self.assertIn("备注模板", result_import.stdout)
+
+        print("\n[OK] 测试17通过")
+
+    def test_18_playbook_filter_and_line_range(self):
+        """测试18: 剧本筛选条件和 manifest 行号范围"""
+        print("\n" + "=" * 60)
+        print("测试18: 筛选条件和行号范围")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_filter")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_filter",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        run_cli([
+            "review", "-b", "batch_pb_filter", "-i", "1",
+            "-s", "signed", "-r", "签了", "-o", "op",
+        ], cwd=work)
+
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_filter",
+            "steps": [
+                {"type": "review", "order": 1, "target_status": "supplement",
+                 "filter_status": "signed"},
+                {"type": "review", "order": 2, "target_status": "signed",
+                 "line_range": [3, 4]},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "filter_playbook.json")
+
+        print("\n[步骤1] 预演验证筛选")
+        result = run_cli(["playbook", "preview", "-p", pb_path], cwd=work)
+        self.assertIn("signed → supplement", result.stdout)
+
+        print("\n[步骤2] 执行验证筛选")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        result = run_cli(["resume", "-b", "batch_pb_filter"], cwd=work)
+        self.assertIn("待补件: 1", result.stdout)
+
+        print("\n[OK] 测试18通过")
+
+    def test_19_playbook_version_incompatible(self):
+        """测试19: 剧本版本不兼容时明确拦截"""
+        print("\n" + "=" * 60)
+        print("测试19: 版本不兼容拦截")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_version")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        playbook_data = {
+            "version": "2.0",
+            "batch_no": "batch_ver",
+            "steps": [{"type": "precheck", "order": 1}],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "ver_playbook.json")
+
+        print("\n[步骤1] 导入版本不兼容剧本")
+        result = run_cli(["playbook", "import", "-p", pb_path], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("版本不兼容", result.stdout + result.stderr)
+
+        print("\n[步骤2] 预演版本不兼容剧本")
+        result = run_cli(["playbook", "preview", "-p", pb_path], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("版本不兼容", result.stdout + result.stderr)
+
+        print("\n[OK] 测试19通过")
+
+    def test_20_playbook_output_file_exists_conflict(self):
+        """测试20: 输出文件已存在时拦截"""
+        print("\n" + "=" * 60)
+        print("测试20: 输出文件冲突拦截")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_outfile")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_outfile",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        existing = os.path.join(work, "existing.json")
+        with open(existing, "w", encoding="utf-8") as f:
+            f.write("{}")
+
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_outfile",
+            "steps": [
+                {"type": "export", "order": 1, "output_path": existing, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "outfile_playbook.json")
+
+        print("\n[步骤1] 不带 --force 执行，应被拦截")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("已存在", result.stdout + result.stderr)
+
+        print("\n[步骤2] 带 --force 执行，应成功")
+        result = run_cli(["playbook", "execute", "-p", pb_path, "--force"], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        print("\n[OK] 测试20通过")
+
+    def test_21_playbook_batch_modified_after_import(self):
+        """测试21: 导入剧本后批次被手工修改，执行时拦截"""
+        print("\n" + "=" * 60)
+        print("测试21: 批次被修改后拦截")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_modified")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_mod",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        export_path = os.path.join(work, "pb_mod_export.json")
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_mod",
+            "steps": [
+                {"type": "review", "order": 1, "target_status": "signed",
+                 "filter_status": "pending"},
+                {"type": "export", "order": 2, "output_path": export_path, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "mod_playbook.json")
+
+        run_cli(["playbook", "import", "-p", pb_path], cwd=work)
+
+        print("\n[步骤1] 手工修改批次（做一次 review）")
+        run_cli([
+            "review", "-b", "batch_pb_mod", "-i", "1",
+            "-s", "signed", "-r", "手工修改", "-o", "manual_op",
+        ], cwd=work)
+
+        print("\n[步骤2] 执行剧本，应被拦截")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("手工修改过", result.stdout + result.stderr)
+
+        print("\n[步骤3] 带 --force 执行，应成功")
+        result = run_cli(["playbook", "execute", "-p", pb_path, "--force"], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        print("\n[OK] 测试21通过")
+
+    def test_22_playbook_rollback_on_failure(self):
+        """测试22: 中途步骤失败时回滚前面成功的步骤"""
+        print("\n" + "=" * 60)
+        print("测试22: 中途失败回滚")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_rollback")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_rollback",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        print("\n[步骤1] 撤销所有复核记录，确保 undo 会跳过")
+        playbook_data_step1 = {
+            "version": "1.0",
+            "batch_no": "batch_pb_rollback",
+            "steps": [
+                {"type": "review", "order": 1, "target_status": "signed",
+                 "filter_status": "pending"},
+            ],
+        }
+        pb1 = self._write_playbook_json(playbook_data_step1, work, "rb_step1.json")
+        run_cli(["playbook", "execute", "-p", pb1], cwd=work)
+
+        export_path = os.path.join(work, "rb_export.json")
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_rollback",
+            "steps": [
+                {"type": "undo", "order": 1},
+                {"type": "undo", "order": 2},
+                {"type": "undo", "order": 3},
+                {"type": "export", "order": 4, "output_path": export_path, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "rb_playbook.json")
+
+        print("\n[步骤2] 先撤销手工一次，让后面 undo 会 skipped")
+        run_cli(["undo", "-b", "batch_pb_rollback", "-o", "manual_undo"], cwd=work)
+
+        print("\n[步骤3] 执行多步 undo（第一条成功，后续无记录会 skipped）")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        print("\n[OK] 测试22通过")
+
+    def test_23_playbook_nonexistent_batch(self):
+        """测试23: 剧本指定的批次不存在时，预演和执行都失败"""
+        print("\n" + "=" * 60)
+        print("测试23: 批次不存在")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_noexist")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "no_such_batch",
+            "steps": [{"type": "precheck", "order": 1}],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "noexist_playbook.json")
+
+        print("\n[步骤1] 预演应显示无法执行")
+        result = run_cli(["playbook", "preview", "-p", pb_path], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("不存在", result.stdout)
+
+        print("\n[步骤2] 执行应失败")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("不存在", result.stdout + result.stderr)
+
+        print("\n[OK] 测试23通过")
+
+    def test_24_playbook_cross_process_history(self):
+        """测试24: 剧本执行日志跨进程可查"""
+        print("\n" + "=" * 60)
+        print("测试24: 跨进程重查剧本历史")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_cross")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_pb_cross",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        export_path = os.path.join(work, "cross_export.json")
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_pb_cross",
+            "operator": "cross_tester",
+            "steps": [
+                {"type": "precheck", "order": 1},
+                {"type": "review", "order": 2, "target_status": "signed",
+                 "filter_status": "pending"},
+                {"type": "export", "order": 3, "output_path": export_path, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "cross_playbook.json")
+
+        run_cli(["playbook", "execute", "-p", pb_path], cwd=work)
+
+        print("\n[步骤1] 新进程查历史")
+        result = run_cli(["playbook", "history", "-b", "batch_pb_cross"], cwd=work)
+        self.assertIn("剧本执行历史", result.stdout)
+        self.assertIn("[OK] completed", result.stdout)
+        self.assertIn("cross_tester", result.stdout)
+        self.assertIn("步骤:", result.stdout)
+        self.assertIn("1. precheck [OK]", result.stdout)
+        self.assertIn("2. review [OK]", result.stdout)
+        self.assertIn("3. export [OK]", result.stdout)
+
+        print("\n[步骤2] 新进程查 resume 确认状态一致")
+        result = run_cli(["resume", "-b", "batch_pb_cross"], cwd=work)
+        self.assertIn("已签收: 3", result.stdout)
+
+        print("\n[OK] 测试24通过")
+
+    def test_25_playbook_real_command_chain(self):
+        """测试25: 真实命令链——从创建批次到剧本导入/预演/执行/撤销/再执行/导出/跨进程重查"""
+        print("\n" + "=" * 60)
+        print("测试25: 真实命令链全流程")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "playbook_e2e")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+        fixture = self._create_evidence_fixture(work)
+
+        print("\n[步骤1] 导入批次")
+        run_cli([
+            "import", "-b", "batch_e2e",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "E2E剧本测试",
+        ], cwd=work)
+
+        print("\n[步骤2] 预检")
+        run_cli(["precheck", "-b", "batch_e2e"], cwd=work)
+
+        print("\n[步骤3] 手工复核第 1 条")
+        run_cli([
+            "review", "-b", "batch_e2e", "-i", "1",
+            "-s", "signed", "-r", "手工签收", "-o", "manual_op",
+        ], cwd=work)
+
+        print("\n[步骤4] 编写剧本（签收剩余 + 导出）")
+        export_path = os.path.join(work, "e2e_export.json")
+        playbook_data = {
+            "version": "1.0",
+            "batch_no": "batch_e2e",
+            "description": "E2E签收剩余+导出",
+            "operator": "e2e_op",
+            "output_file": export_path,
+            "steps": [
+                {"type": "review", "order": 1, "target_status": "signed",
+                 "filter_status": "pending",
+                 "remark_template": "批次{batch_no}自动签收{file_path}"},
+                {"type": "export", "order": 2, "output_path": export_path, "export_format": "json"},
+            ],
+        }
+        pb_path = self._write_playbook_json(playbook_data, work, "e2e_playbook.json")
+
+        print("\n[步骤5] 导入剧本")
+        result = run_cli(["playbook", "import", "-p", pb_path], cwd=work)
+        self.assertIn("剧本导入成功", result.stdout)
+        self.assertIn("E2E签收剩余+导出", result.stdout)
+
+        print("\n[步骤6] 预演")
+        result = run_cli(["playbook", "preview", "-p", pb_path], cwd=work)
+        self.assertIn("可以执行", result.stdout)
+        self.assertIn("pending → signed", result.stdout)
+
+        print("\n[步骤7] 执行剧本")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        print("\n[步骤8] 验证状态")
+        result = run_cli(["resume", "-b", "batch_e2e"], cwd=work)
+        self.assertIn("已签收: 3", result.stdout)
+        self.assertIn("批次batch_e2e自动签收", result.stdout)
+
+        print("\n[步骤9] 验证导出文件")
+        self.assertTrue(os.path.exists(export_path))
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        self.assertEqual(export_data["statistics"]["review"]["signed"], 3)
+
+        print("\n[步骤10] 撤销一条复核")
+        run_cli(["undo", "-b", "batch_e2e", "-o", "undo_e2e"], cwd=work)
+        result = run_cli(["resume", "-b", "batch_e2e"], cwd=work)
+        self.assertIn("已签收: 2", result.stdout)
+
+        print("\n[步骤11] 再执行一个剧本签回")
+        export_path2 = os.path.join(work, "e2e_export_v2.json")
+        playbook_data2 = {
+            "version": "1.0",
+            "batch_no": "batch_e2e",
+            "operator": "e2e_op2",
+            "steps": [
+                {"type": "review", "order": 1, "target_status": "signed",
+                 "filter_status": "pending"},
+                {"type": "export", "order": 2, "output_path": export_path2, "export_format": "json"},
+            ],
+        }
+        pb_path2 = self._write_playbook_json(playbook_data2, work, "e2e_playbook_v2.json")
+        result = run_cli(["playbook", "execute", "-p", pb_path2], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        result = run_cli(["resume", "-b", "batch_e2e"], cwd=work)
+        self.assertIn("已签收: 3", result.stdout)
+
+        print("\n[步骤12] 跨进程重查")
+        result = run_cli(["playbook", "history", "-b", "batch_e2e"], cwd=work)
+        self.assertIn("[OK] completed", result.stdout)
+
+        result = run_cli(["resume", "-b", "batch_e2e"], cwd=work)
+        self.assertIn("已签收: 3", result.stdout)
+
+        print("\n[OK] 测试25通过")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
