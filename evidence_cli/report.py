@@ -70,11 +70,11 @@ def export_csv(items: List[Dict], output_path: str, batch_info: Dict = None) -> 
 
 def export_json(items: List[Dict], output_path: str, batch_info: Dict = None,
                 review_stats: Dict = None, precheck_stats: Dict = None,
-                restore_trace: Dict = None) -> int:
+                restore_trace: Dict = None, recovery_summary: Dict = None) -> int:
     """
     导出 JSON 报告。
 
-    包含：批次信息、统计信息、证据项列表、复核历史摘要、完整恢复链路（如果有）
+    包含：批次信息、统计信息、证据项列表、统一恢复摘要、完整恢复链路（如果有）
     """
     import json as _json
 
@@ -105,6 +105,12 @@ def export_json(items: List[Dict], output_path: str, batch_info: Dict = None,
                 except (_json.JSONDecodeError, TypeError):
                     restore_info["diff"] = batch_info["restore_diff"]
             report["batch"]["restore"] = restore_info
+
+    if recovery_summary is None and restore_trace is not None:
+        recovery_summary = restore_trace.get("recovery_summary")
+
+    if recovery_summary:
+        report["recovery_summary"] = recovery_summary
 
     if restore_trace and restore_trace.get("has_restore_chain"):
         chain = {

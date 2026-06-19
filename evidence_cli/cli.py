@@ -315,11 +315,65 @@ def undo(ctx, batch_no, operator):
 
 
 def _show_restore_info(batch: Dict, db_path: Optional[str] = None) -> None:
-    """显示恢复来源信息，如有 db_path 则补充链路级信息"""
-    if not batch.get("restored_from"):
+    """显示恢复来源信息，使用统一恢复摘要"""
+    if not batch.get("restored_from") and not db_path:
         return
 
-    click.echo(f"恢复来源: {batch['restored_from']}")
+    if db_path:
+        recovery_summary = snapshot_mod.build_recovery_summary(db_path, batch["batch_no"])
+        if recovery_summary and recovery_summary.get("has_restore"):
+            src = recovery_summary.get("source_snapshot")
+            if src:
+                snap_marker = "[OK]" if src.get("exists") else "[MISSING](已丢失)"
+                click.echo(f"来源快照: {snap_marker} {src.get('path', '')}")
+            evt = recovery_summary.get("restore_event")
+            if evt and evt.get("restored_at"):
+                click.echo(f"恢复时间: {format_time(evt['restored_at'])}")
+                if evt.get("operator"):
+                    click.echo(f"操作人: {evt['operator']}")
+                tag_parts = []
+                if evt.get("was_force"):
+                    tag_parts.append("强制覆盖")
+                if evt.get("was_remapped"):
+                    tag_parts.append("目录重映射")
+                if tag_parts:
+                    click.echo(f"恢复方式: {'、'.join(tag_parts)}")
+
+            diff = recovery_summary.get("overwrite_diff")
+            if diff:
+                old_desc = diff.get("old_batch", {}).get("description", "(无)")
+                new_desc = diff.get("new_batch", {}).get("description", "(无)")
+                click.echo(f"覆盖差异: 旧批次「{old_desc}」→ 新批次「{new_desc}」")
+                old_rv = diff.get("review_stats", {}).get("old", {})
+                new_rv = diff.get("review_stats", {}).get("new", {})
+                click.echo(
+                    f"            复核: 已签收 {old_rv.get('signed', 0)} → {new_rv.get('signed', 0)}  "
+                    f"待补件 {old_rv.get('supplement', 0)} → {new_rv.get('supplement', 0)}"
+                )
+
+            trace = snapshot_mod.build_trace(db_path, batch["batch_no"])
+            if trace and trace["has_restore_chain"]:
+                click.echo(f"恢复链路: 共 {len(trace['events'])} 次恢复")
+                ops = recovery_summary.get("post_restore_ops", {})
+                op_count = ops.get("count", 0)
+                if op_count > 0:
+                    click.echo(
+                        f"  [!] 恢复后有 {op_count} 条新操作"
+                        f"（复核 {ops.get('review_count', 0)} 条，撤销 {ops.get('undo_count', 0)} 条）"
+                        f"（使用 trace 命令查看详情）"
+                    )
+                else:
+                    click.echo("  恢复后未再修改（使用 trace 命令查看完整链路）")
+
+            recon = recovery_summary.get("reconciled", False)
+            if recon:
+                click.echo("对账: [OK] 通过")
+            else:
+                click.echo("对账: [!] 存在告警（使用 trace 命令查看详情）")
+            click.echo("")
+            return
+
+    click.echo(f"来源快照: {batch['restored_from']}")
     click.echo(f"恢复时间: {format_time(batch.get('restored_at'))}")
     if batch.get("restore_diff"):
         import json
@@ -334,18 +388,6 @@ def _show_restore_info(batch: Dict, db_path: Optional[str] = None) -> None:
                        f"待补件 {old_rv.get('supplement', 0)} → {new_rv.get('supplement', 0)}")
         except (json.JSONDecodeError, TypeError):
             pass
-
-    if db_path:
-        trace = snapshot_mod.build_trace(db_path, batch["batch_no"])
-        if trace and trace["has_restore_chain"]:
-            click.echo(f"恢复链路: 共 {len(trace['events'])} 次恢复")
-            if trace["modified_after_restore"]:
-                click.echo(
-                    f"  [!] 恢复后有 {len(trace['post_restore_activity'])} 条新操作"
-                    f"（使用 trace 命令查看详情）"
-                )
-            else:
-                click.echo("  恢复后未再修改（使用 trace 命令查看完整链路）")
     click.echo("")
 
 
@@ -472,33 +514,44 @@ def list_cmd(ctx):
         total, signed, supplement, pending = db.count_reviewed(db_path, b["id"])
         progress = f"{signed}/{total}" if total > 0 else "0/0"
         status_tag = ""
-        if b.get("restored_from"):
+        recovery_summary = snapshot_mod.build_recovery_summary(db_path, b["batch_no"])
+        if recovery_summary and recovery_summary.get("has_restore"):
             trace = snapshot_mod.build_trace(db_path, b["batch_no"])
             if trace and trace["has_restore_chain"]:
                 evt_count = len(trace["events"])
-                mod_tag = " [已修改]" if trace["modified_after_restore"] else ""
+                ops = recovery_summary.get("post_restore_ops", {})
+                mod_tag = ""
+                if ops.get("count", 0) > 0:
+                    mod_tag = f" [已修改+{ops['count']}]"
                 if evt_count > 1:
                     status_tag = f" [已恢复×{evt_count}{mod_tag}]"
                 else:
                     status_tag = f" [已恢复{mod_tag}]"
             else:
                 status_tag = " [已恢复]"
+            if not recovery_summary.get("reconciled", True):
+                status_tag += " [!对账]"
         click.echo(f"  {b['batch_no']}{status_tag}  进度: {progress}  "
                    f"更新: {format_time(b['updated_at'])}")
         if b.get("description"):
             click.echo(f"    描述: {b['description']}")
-        if b.get("restored_from"):
-            click.echo(f"    恢复来源: {b['restored_from']}")
-            click.echo(f"    恢复时间: {format_time(b.get('restored_at'))}")
-            trace = snapshot_mod.build_trace(db_path, b["batch_no"])
-            if trace:
-                if trace["has_restore_chain"] and trace["modified_after_restore"]:
-                    click.echo(
-                        f"    恢复后操作: {len(trace['post_restore_activity'])} 条"
-                        f"（trace 查看详情）"
-                    )
-                for w in trace["warnings"]:
-                    click.echo(f"    [!] {w}")
+        if recovery_summary and recovery_summary.get("has_restore"):
+            src = recovery_summary.get("source_snapshot")
+            if src:
+                snap_marker = "[OK]" if src.get("exists") else "[MISSING]"
+                click.echo(f"    来源快照: {snap_marker} {src.get('path', '')}")
+            evt = recovery_summary.get("restore_event")
+            if evt and evt.get("restored_at"):
+                click.echo(f"    恢复时间: {format_time(evt['restored_at'])}")
+            ops = recovery_summary.get("post_restore_ops", {})
+            if ops.get("count", 0) > 0:
+                click.echo(
+                    f"    恢复后操作: {ops['count']} 条"
+                    f"（复核 {ops.get('review_count', 0)}，撤销 {ops.get('undo_count', 0)}）"
+                    f"（trace 查看详情）"
+                )
+            for w in recovery_summary.get("warnings", []):
+                click.echo(f"    [!] {w}")
 
 
 @main.command()
@@ -517,9 +570,16 @@ def trace(ctx, batch_no):
 
 def _format_trace_output(trace_data: Dict) -> None:
     """格式化输出恢复链路追踪信息"""
-    click.echo("=" * 60)
-    click.echo(f"批次恢复链路: {trace_data['batch_no']}")
-    click.echo("=" * 60)
+    recovery_summary = trace_data.get("recovery_summary")
+    if recovery_summary:
+        _format_unified_recovery_summary(
+            recovery_summary,
+            title=f"批次恢复链路: {trace_data['batch_no']}",
+        )
+    else:
+        click.echo("=" * 60)
+        click.echo(f"批次恢复链路: {trace_data['batch_no']}")
+        click.echo("=" * 60)
 
     batch = trace_data["batch"]
     click.echo(f"清单文件: {batch['manifest_path']}")
@@ -532,7 +592,7 @@ def _format_trace_output(trace_data: Dict) -> None:
 
     warnings = trace_data.get("warnings", [])
     if warnings:
-        click.echo("[!] 整体告警:")
+        click.echo("[!] 链路告警:")
         for w in warnings:
             click.echo(f"    {w}")
         click.echo("")
@@ -540,7 +600,7 @@ def _format_trace_output(trace_data: Dict) -> None:
     if not trace_data["has_restore_chain"]:
         if batch.get("restored_from"):
             click.echo("该批次由旧版本恢复，仅有基础来源信息，无完整链路：")
-            click.echo(f"  恢复来源: {batch.get('restored_from')}")
+            click.echo(f"  来源快照: {batch.get('restored_from')}")
             click.echo(f"  恢复时间: {format_time(batch.get('restored_at'))}")
         else:
             click.echo("该批次从未从快照恢复，为原始导入批次。")
@@ -776,133 +836,203 @@ def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
-def _format_preview(preview: Dict) -> None:
-    """格式化预演信息输出"""
-    import json
+def _format_unified_recovery_summary(
+    recovery_summary: Dict,
+    title: str = "恢复摘要",
+    include_post_ops: bool = True,
+    include_warnings: bool = True,
+) -> None:
+    """
+    统一格式化输出恢复摘要。
 
-    click.echo("=" * 60)
-    click.echo("恢复预演")
-    click.echo("=" * 60)
-    click.echo(f"批次号: {preview['batch_no']}")
-    click.echo(f"快照文件: {preview['snapshot_path']}")
-    click.echo("")
+    这是 trace / list / resume / preview / 恢复完成 等所有视图共用的格式化函数，
+    保证各命令输出的摘要信息完全一致。
 
-    if preview["will_conflict"]:
-        if preview["can_restore"]:
-            click.echo("[!] 检测到同名批次，将使用 --force 覆盖")
+    参数:
+        recovery_summary: build_recovery_summary 或 build_recovery_summary_from_preview 返回的摘要
+        title: 输出标题
+        include_post_ops: 是否显示恢复后新增操作数
+        include_warnings: 是否显示告警
+    """
+    click.echo("=" * 60)
+    click.echo(title)
+    click.echo("=" * 60)
+    click.echo(f"批次号: {recovery_summary['batch_no']}")
+
+    if not recovery_summary.get("has_restore"):
+        click.echo("状态: 原始导入批次，从未从快照恢复")
+        click.echo("")
+    else:
+        src = recovery_summary.get("source_snapshot")
+        if src:
+            snap_marker = "[OK]" if src.get("exists") else "[MISSING](已丢失)"
+            click.echo(f"来源快照: {snap_marker} {src.get('path', '')}")
+            if src.get("created_at"):
+                click.echo(f"快照创建: {format_time(src['created_at'])}")
+
+        evt = recovery_summary.get("restore_event")
+        if evt and evt.get("restored_at"):
+            click.echo(f"恢复时间: {format_time(evt['restored_at'])}")
+            if evt.get("operator"):
+                click.echo(f"操作人: {evt['operator']}")
+            tag_parts = []
+            if evt.get("was_force"):
+                tag_parts.append("强制覆盖")
+            if evt.get("was_remapped"):
+                tag_parts.append("目录重映射")
+            if tag_parts:
+                click.echo(f"恢复方式: {'、'.join(tag_parts)}")
+        elif evt:
+            tag_parts = []
+            if evt.get("was_force"):
+                tag_parts.append("强制覆盖")
+            if evt.get("was_remapped"):
+                tag_parts.append("目录重映射")
+            if tag_parts:
+                click.echo(f"预计恢复方式: {'、'.join(tag_parts)}")
+
+        click.echo("")
+
+        rv = recovery_summary.get("review_stats", {})
+        click.echo("复核统计:")
+        click.echo(
+            f"  总计: {rv.get('total', 0)}  已签收: {rv.get('signed', 0)}  "
+            f"待补件: {rv.get('supplement', 0)}  待处理: {rv.get('pending', 0)}"
+        )
+        click.echo("")
+
+        pc = recovery_summary.get("precheck_stats", {})
+        click.echo("预检统计:")
+        click.echo(
+            f"  总计: {pc.get('total', 0)}  通过: {pc.get('passed', 0)}  "
+            f"失败: {pc.get('failed', 0)}  未检查: {pc.get('unchecked', 0)}"
+        )
+        click.echo(f"证据项数量: {recovery_summary.get('item_count', 0)}")
+        click.echo("")
+
+        last_log = recovery_summary.get("last_review_log")
+        if last_log:
+            action_label = "撤销" if last_log.get("action") == "undo" else "复核"
+            click.echo("最后一条复核记录:")
+            click.echo(f"  [{format_time(last_log.get('created_at', 0))}] {action_label}")
+            if last_log.get("file_path"):
+                fp = last_log["file_path"]
+                if last_log.get("manifest_line_no"):
+                    click.echo(f"  文件(清单第{last_log['manifest_line_no']}行): {fp}")
+                else:
+                    click.echo(f"  文件: {fp}")
+            from_label = STATUS_LABELS.get(last_log.get("prev_status"), last_log.get("prev_status"))
+            to_label = STATUS_LABELS.get(last_log.get("new_status"), last_log.get("new_status"))
+            click.echo(f"  状态: {from_label} → {to_label}")
+            if last_log.get("new_remark"):
+                click.echo(f"  备注: {last_log['new_remark']}")
+            if last_log.get("operator"):
+                click.echo(f"  操作人: {last_log['operator']}")
+            click.echo("")
+
+        diff = recovery_summary.get("overwrite_diff")
+        if diff:
+            click.echo("-" * 60)
+            click.echo("覆盖差异 (旧 → 新)")
+            click.echo("-" * 60)
+            old_batch = diff.get("old_batch", {})
+            new_batch = diff.get("new_batch", {})
+            old_desc = old_batch.get("description", "(无描述)")
+            new_desc = new_batch.get("description", "(无描述)")
+            if old_desc or new_desc:
+                click.echo(f"批次描述: 「{old_desc}」→「{new_desc}」")
+
+            old_rv = diff.get("review_stats", {}).get("old", {})
+            new_rv = diff.get("review_stats", {}).get("new", {})
+            click.echo(
+                f"复核统计: 已签收 {old_rv.get('signed', 0)} → {new_rv.get('signed', 0)}  "
+                f"待补件 {old_rv.get('supplement', 0)} → {new_rv.get('supplement', 0)}  "
+                f"待处理 {old_rv.get('pending', 0)} → {new_rv.get('pending', 0)}"
+            )
+
+            items_diff = diff.get("items", {})
+            only_old = items_diff.get("only_in_old", [])
+            only_new = items_diff.get("only_in_new", [])
+            in_both = items_diff.get("in_both", [])
+            if only_old:
+                click.echo(f"仅在旧批次: {len(only_old)} 项")
+                for p in only_old[:3]:
+                    click.echo(f"  - {p}")
+                if len(only_old) > 3:
+                    click.echo(f"  ... 还有 {len(only_old) - 3} 项")
+            if only_new:
+                click.echo(f"仅在新批次: {len(only_new)} 项")
+                for p in only_new[:3]:
+                    click.echo(f"  - {p}")
+                if len(only_new) > 3:
+                    click.echo(f"  ... 还有 {len(only_new) - 3} 项")
+            if in_both:
+                click.echo(f"双方共有: {len(in_both)} 项")
+            click.echo("")
+
+        if include_post_ops:
+            ops = recovery_summary.get("post_restore_ops", {})
+            op_count = ops.get("count", 0)
+            if op_count > 0:
+                click.echo(
+                    f"恢复后新增操作: {op_count} 条"
+                    f"（复核 {ops.get('review_count', 0)} 条，撤销 {ops.get('undo_count', 0)} 条）"
+                )
+            else:
+                click.echo("恢复后新增操作: 0 条（未修改）")
+            click.echo("")
+
+        recon = recovery_summary.get("reconciled", False)
+        recon_details = recovery_summary.get("reconciliation_details", {})
+        recon_tag = "[OK] 对账通过" if recon else "[!] 对账告警"
+        recon_parts = []
+        if recon_details.get("item_count_consistent"):
+            recon_parts.append("item数一致")
         else:
-            click.echo(f"[X] 冲突: {preview.get('conflict_reason', '批次已存在')}")
+            recon_parts.append("item数不一致")
+        if recon_details.get("review_stats_consistent"):
+            recon_parts.append("复核统计一致")
+        else:
+            recon_parts.append("复核统计不一致")
+        if recon_details.get("post_restore_count_consistent"):
+            recon_parts.append("操作计数一致")
+        else:
+            recon_parts.append("操作计数不一致")
+        click.echo(f"{recon_tag}: {'、'.join(recon_parts)}")
         click.echo("")
 
-    if preview["missing_files"]:
-        click.echo("[X] 缺失文件:")
-        for m in preview["missing_files"]:
-            click.echo(f"  - {m}")
-        click.echo("")
+        if include_warnings:
+            for w in recovery_summary.get("warnings", []):
+                click.echo(f"[!] {w}")
 
-    click.echo(f"清单文件映射: {preview['manifest_path']}")
-    click.echo(f"证据目录映射: {preview['evidence_dir']}")
-    click.echo(f"证据项数量: {preview['item_count']}")
-    click.echo("")
+    click.echo("=" * 60)
 
-    pc = preview["precheck_stats"]
-    click.echo("预检统计:")
-    click.echo(f"  总计: {pc['total']}  通过: {pc['passed']}  "
-               f"失败: {pc['failed']}  未检查: {pc['unchecked']}")
-    click.echo("")
 
-    rv = preview["review_stats"]
-    click.echo("复核统计:")
-    click.echo(f"  总计: {rv['total']}  已签收: {rv['signed']}  "
-               f"待补件: {rv['supplement']}  待处理: {rv['pending']}")
-    click.echo("")
+def _format_preview(preview: Dict) -> None:
+    """格式化预演信息输出，使用统一恢复摘要结构"""
+    recovery_summary = snapshot_mod.build_recovery_summary_from_preview(preview)
+    _format_unified_recovery_summary(recovery_summary, title="恢复预演")
 
-    last_log = preview["last_log"]
-    if last_log:
-        action_label = "撤销" if last_log["action"] == "undo" else "复核"
-        click.echo("最近一条操作记录:")
-        click.echo(f"  [{format_time(last_log['created_at'])}] {action_label}")
-        if last_log.get('file_path'):
-            click.echo(f"  文件: {last_log['file_path']}")
-        click.echo(f"  状态: {last_log['prev_status']} → {last_log['new_status']}")
-        if last_log.get('operator'):
-            click.echo(f"  操作人: {last_log['operator']}")
-        click.echo("")
-
-    diff = preview.get("diff")
-    if diff:
-        click.echo("-" * 60)
-        click.echo("覆盖差异 (旧 → 新)")
-        click.echo("-" * 60)
-        old_rv = diff["review_stats"]["old"]
-        new_rv = diff["review_stats"]["new"]
-        click.echo("复核统计变化:")
-        click.echo(f"  已签收: {old_rv['signed']} → {new_rv['signed']}")
-        click.echo(f"  待补件: {old_rv['supplement']} → {new_rv['supplement']}")
-        click.echo(f"  待处理: {old_rv['pending']} → {new_rv['pending']}")
-        click.echo("")
-
-        old_pc = diff["precheck_stats"]["old"]
-        new_pc = diff["precheck_stats"]["new"]
-        click.echo("预检统计变化:")
-        click.echo(f"  通过: {old_pc['passed']} → {new_pc['passed']}")
-        click.echo(f"  失败: {old_pc['failed']} → {new_pc['failed']}")
-        click.echo("")
-
-        items_diff = diff["items"]
-        if items_diff["only_in_old"]:
-            click.echo(f"仅在旧批次中:")
-            for p in items_diff["only_in_old"][:5]:
-                click.echo(f"  - {p}")
-            if len(items_diff["only_in_old"]) > 5:
-                click.echo(f"  ... 还有 {len(items_diff['only_in_old']) - 5} 项")
-            click.echo("")
-        if items_diff["only_in_new"]:
-            click.echo(f"仅在新批次中:")
-            for p in items_diff["only_in_new"][:5]:
-                click.echo(f"  - {p}")
-            if len(items_diff["only_in_new"]) > 5:
-                click.echo(f"  ... 还有 {len(items_diff['only_in_new']) - 5} 项")
-            click.echo("")
-        if items_diff["in_both"]:
-            click.echo(f"双方共有: {len(items_diff['in_both'])} 项")
-            click.echo("")
-
-    if preview["can_restore"]:
-        click.echo("[OK] 可以恢复")
+    if preview.get("can_restore"):
+        click.echo("[OK] 可以恢复（以上为落库后的预期摘要）")
     else:
         click.echo("[X] 无法恢复，请修正上述问题后重试")
     click.echo("=" * 60)
 
 
-def _format_restore_summary(summary: Dict) -> None:
-    """格式化恢复摘要输出"""
-    click.echo("=" * 60)
-    click.echo("恢复完成")
-    click.echo("=" * 60)
-    click.echo(f"批次号: {summary['batch_no']}")
-    click.echo(f"恢复来源: {summary['restored_from']}")
-    click.echo(f"清单文件: {summary['manifest_path']}")
-    evidence_label = "证据目录(重映射)" if summary.get("evidence_remapped") else "证据目录"
-    click.echo(f"{evidence_label}: {summary['evidence_dir']}")
-    click.echo(f"证据项数量: {summary['item_count']}")
-    click.echo("")
-
-    rv = summary["review_stats"]
-    click.echo("复核统计:")
-    click.echo(f"  总计: {rv['total']}  已签收: {rv['signed']}  "
-               f"待补件: {rv['supplement']}  待处理: {rv['pending']}")
-    click.echo("")
-
-    if summary.get("was_conflict") and summary.get("was_force"):
-        click.echo("[!] 已覆盖原有批次")
-        diff = summary.get("diff")
-        if diff:
-            old_rv = diff["review_stats"]["old"]
-            new_rv = diff["review_stats"]["new"]
-            click.echo(f"  复核: 已签收 {old_rv['signed']} → {new_rv['signed']}")
-            click.echo(f"        待补件 {old_rv['supplement']} → {new_rv['supplement']}")
-    click.echo("=" * 60)
+def _format_restore_summary(summary: Dict, db_path: str, batch_no: str) -> None:
+    """格式化恢复完成摘要，从数据库读取统一恢复摘要输出"""
+    recovery_summary = snapshot_mod.build_recovery_summary(db_path, batch_no)
+    if recovery_summary:
+        _format_unified_recovery_summary(recovery_summary, title="恢复完成")
+    else:
+        click.echo("=" * 60)
+        click.echo("恢复完成")
+        click.echo("=" * 60)
+        click.echo(f"批次号: {summary['batch_no']}")
+        click.echo(f"来源快照: {summary['restored_from']}")
+        click.echo(f"证据项数量: {summary['item_count']}")
+        click.echo("=" * 60)
 
 
 @snapshot.command("restore")
@@ -983,7 +1113,7 @@ def snapshot_restore(ctx, snapshot_path, force, evidence_dir, target_work_dir, d
         click.echo(f"错误: {e}", err=True)
         sys.exit(1)
 
-    _format_restore_summary(summary)
+    _format_restore_summary(summary, target_db_path, batch_no)
 
 
 if __name__ == "__main__":

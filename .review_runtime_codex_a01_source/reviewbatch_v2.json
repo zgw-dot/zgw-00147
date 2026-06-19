@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "snapshot_created_at": 1781908126.724841,
+  "batch": {
+    "batch_no": "reviewbatch",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+    "description": "版本二",
+    "created_at": 1781908094.676489,
+    "updated_at": 1781908116.5471258
+  },
+  "items": [
+    {
+      "id": 4,
+      "batch_id": 2,
+      "file_path": "docs/evidence_b.txt",
+      "expected_size": 54,
+      "expected_sha256": "c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a",
+      "manifest_line_no": 2,
+      "actual_size": 54,
+      "actual_sha256": "c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "二版补件",
+      "reviewed_at": 1781908116.5471258
+    },
+    {
+      "id": 5,
+      "batch_id": 2,
+      "file_path": "transaction.csv",
+      "expected_size": 23,
+      "expected_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "manifest_line_no": 3,
+      "actual_size": 23,
+      "actual_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    },
+    {
+      "id": 6,
+      "batch_id": 2,
+      "file_path": "images/screenshot.png",
+      "expected_size": 38,
+      "expected_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "manifest_line_no": 4,
+      "actual_size": 38,
+      "actual_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "review_logs": [
+    {
+      "id": 2,
+      "batch_id": 2,
+      "item_id": 4,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "supplement",
+      "new_remark": "二版补件",
+      "action": "review",
+      "operator": "reviewerB",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781908116.5471258,
+      "file_path": "docs/evidence_b.txt"
+    }
+  ]
+}

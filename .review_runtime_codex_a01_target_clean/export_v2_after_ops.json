@@ -1,0 +1,386 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "reviewbatch",
+    "description": "版本二",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+    "created_at": 1781908179.715116,
+    "updated_at": 1781908269.214564,
+    "restore": {
+      "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v2.json",
+      "restored_at": 1781908251.1918921,
+      "diff": {
+        "old_batch": {
+          "description": "版本一",
+          "created_at": 1781908156.7433054,
+          "updated_at": 1781908166.9492965,
+          "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+          "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence"
+        },
+        "new_batch": {
+          "description": "版本二",
+          "created_at": 1781908179.715116,
+          "updated_at": 1781908196.614897,
+          "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+          "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence"
+        },
+        "review_stats": {
+          "old": {
+            "total": 3,
+            "signed": 1,
+            "supplement": 0,
+            "pending": 2
+          },
+          "new": {
+            "total": 3,
+            "signed": 0,
+            "supplement": 1,
+            "pending": 2
+          }
+        },
+        "precheck_stats": {
+          "old": {
+            "total": 3,
+            "passed": 3,
+            "failed": 0,
+            "unchecked": 0
+          },
+          "new": {
+            "total": 3,
+            "passed": 3,
+            "failed": 0,
+            "unchecked": 0
+          }
+        },
+        "items": {
+          "only_in_old": [
+            "docs/evidence_a.txt"
+          ],
+          "only_in_new": [
+            "docs/evidence_b.txt"
+          ],
+          "in_both": [
+            "images/screenshot.png",
+            "transaction.csv"
+          ]
+        }
+      }
+    }
+  },
+  "statistics": {
+    "precheck": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review": {
+      "total": 3,
+      "signed": 0,
+      "supplement": 1,
+      "pending": 2
+    }
+  },
+  "items": [
+    {
+      "id": 4,
+      "file_path": "docs/evidence_b.txt",
+      "manifest_line_no": 2,
+      "expected_size": 54,
+      "actual_size": 54,
+      "expected_sha256": "c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a",
+      "actual_sha256": "c6ed85e67a572dce6142c34f103b7378846454744573006422c5261bd5d2769a",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "二版补件",
+      "reviewed_at": 1781908196.614897
+    },
+    {
+      "id": 5,
+      "file_path": "transaction.csv",
+      "manifest_line_no": 3,
+      "expected_size": 23,
+      "actual_size": 23,
+      "expected_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "actual_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": 1781908269.214564
+    },
+    {
+      "id": 6,
+      "file_path": "images/screenshot.png",
+      "manifest_line_no": 4,
+      "expected_size": 38,
+      "actual_size": 38,
+      "expected_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "actual_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "recovery_summary": {
+    "batch_no": "reviewbatch",
+    "has_restore": true,
+    "source_snapshot": {
+      "path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v2.json",
+      "exists": true,
+      "created_at": 1781908202.2865365
+    },
+    "overwrite_diff": {
+      "old_batch": {
+        "description": "版本一",
+        "created_at": 1781908156.7433054,
+        "updated_at": 1781908166.9492965,
+        "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+        "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence"
+      },
+      "new_batch": {
+        "description": "版本二",
+        "created_at": 1781908179.715116,
+        "updated_at": 1781908196.614897,
+        "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+        "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence"
+      },
+      "review_stats": {
+        "old": {
+          "total": 3,
+          "signed": 1,
+          "supplement": 0,
+          "pending": 2
+        },
+        "new": {
+          "total": 3,
+          "signed": 0,
+          "supplement": 1,
+          "pending": 2
+        }
+      },
+      "precheck_stats": {
+        "old": {
+          "total": 3,
+          "passed": 3,
+          "failed": 0,
+          "unchecked": 0
+        },
+        "new": {
+          "total": 3,
+          "passed": 3,
+          "failed": 0,
+          "unchecked": 0
+        }
+      },
+      "items": {
+        "only_in_old": [
+          "docs/evidence_a.txt"
+        ],
+        "only_in_new": [
+          "docs/evidence_b.txt"
+        ],
+        "in_both": [
+          "images/screenshot.png",
+          "transaction.csv"
+        ]
+      }
+    },
+    "last_review_log": {
+      "id": 2,
+      "action": "review",
+      "item_id": 4,
+      "prev_status": "pending",
+      "new_status": "supplement",
+      "prev_remark": null,
+      "new_remark": "二版补件",
+      "operator": "reviewerB",
+      "created_at": 1781908196.614897,
+      "file_path": "docs/evidence_b.txt",
+      "manifest_line_no": 2
+    },
+    "post_restore_ops": {
+      "count": 2,
+      "review_count": 1,
+      "undo_count": 1
+    },
+    "restore_event": {
+      "event_id": 2,
+      "restored_at": 1781908251.1918921,
+      "was_force": true,
+      "was_remapped": false,
+      "operator": "restorer2",
+      "parent_event_id": 1
+    },
+    "precheck_stats": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review_stats": {
+      "total": 3,
+      "signed": 0,
+      "supplement": 1,
+      "pending": 2
+    },
+    "item_count": 3,
+    "reconciled": true,
+    "reconciliation_details": {
+      "item_count_consistent": true,
+      "review_stats_consistent": true,
+      "post_restore_count_consistent": true
+    },
+    "warnings": [
+      "恢复后有 2 条新操作（复核 1 条，撤销 1 条）"
+    ]
+  },
+  "restore_trace": {
+    "event_count": 2,
+    "modified_after_restore": true,
+    "warnings": [
+      "该批次在最近一次恢复后有 2 条新的复核/撤销操作"
+    ],
+    "events": [
+      {
+        "event_id": 1,
+        "restored_at": 1781908215.564932,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v1.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781908173.3188822,
+        "parent_event_id": null,
+        "was_force": false,
+        "was_remapped": false,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+        "old_batch_snapshot": null,
+        "restore_diff": null,
+        "operator": "restorer1",
+        "chain_ok": true,
+        "warnings": []
+      },
+      {
+        "event_id": 2,
+        "restored_at": 1781908251.1918921,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v2.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781908202.2865365,
+        "parent_event_id": 1,
+        "was_force": true,
+        "was_remapped": false,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+        "old_batch_snapshot": {
+          "batch": {
+            "id": 1,
+            "batch_no": "reviewbatch",
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+            "description": "版本一",
+            "created_at": 1781908156.7433054,
+            "updated_at": 1781908166.9492965,
+            "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v1.json",
+            "restored_at": 1781908215.564932,
+            "last_restore_event_id": 1
+          },
+          "review_stats": {
+            "total": 3,
+            "signed": 1,
+            "supplement": 0,
+            "pending": 2
+          },
+          "item_count": 3,
+          "review_log_count": 1
+        },
+        "restore_diff": {
+          "old_batch": {
+            "description": "版本一",
+            "created_at": 1781908156.7433054,
+            "updated_at": 1781908166.9492965,
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence"
+          },
+          "new_batch": {
+            "description": "版本二",
+            "created_at": 1781908179.715116,
+            "updated_at": 1781908196.614897,
+            "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v2.csv",
+            "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence"
+          },
+          "review_stats": {
+            "old": {
+              "total": 3,
+              "signed": 1,
+              "supplement": 0,
+              "pending": 2
+            },
+            "new": {
+              "total": 3,
+              "signed": 0,
+              "supplement": 1,
+              "pending": 2
+            }
+          },
+          "precheck_stats": {
+            "old": {
+              "total": 3,
+              "passed": 3,
+              "failed": 0,
+              "unchecked": 0
+            },
+            "new": {
+              "total": 3,
+              "passed": 3,
+              "failed": 0,
+              "unchecked": 0
+            }
+          },
+          "items": {
+            "only_in_old": [
+              "docs/evidence_a.txt"
+            ],
+            "only_in_new": [
+              "docs/evidence_b.txt"
+            ],
+            "in_both": [
+              "images/screenshot.png",
+              "transaction.csv"
+            ]
+          }
+        },
+        "operator": "restorer2",
+        "chain_ok": true,
+        "warnings": []
+      }
+    ],
+    "post_restore_activity": [
+      {
+        "id": 3,
+        "action": "review",
+        "item_id": 5,
+        "file_path": "transaction.csv",
+        "prev_status": "pending",
+        "new_status": "signed",
+        "new_remark": "恢复后追加签收",
+        "operator": "reviewerC",
+        "created_at": 1781908263.807531
+      },
+      {
+        "id": 4,
+        "action": "undo",
+        "item_id": 5,
+        "file_path": "transaction.csv",
+        "prev_status": "signed",
+        "new_status": "pending",
+        "new_remark": null,
+        "operator": "reviewerC",
+        "created_at": 1781908269.214564
+      }
+    ]
+  }
+}

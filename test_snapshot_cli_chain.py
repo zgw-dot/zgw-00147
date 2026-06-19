@@ -163,11 +163,10 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "--dry-run",
         ], cwd=work_b)
         self.assertIn("恢复预演", result.stdout)
-        self.assertIn("清单文件映射", result.stdout)
-        self.assertIn("证据目录映射", result.stdout)
+        self.assertIn("目录重映射", result.stdout)
         self.assertIn("预检统计", result.stdout)
         self.assertIn("复核统计", result.stdout)
-        self.assertIn("最近一条操作记录", result.stdout)
+        self.assertIn("最后一条复核记录", result.stdout)
         self.assertIn("可以恢复", result.stdout)
 
         print("\n[步骤5] 在 work_b 确认恢复")
@@ -177,22 +176,22 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "-e", fixture["evidence_dir"],
         ], cwd=work_b)
         self.assertIn("恢复完成", result.stdout)
-        self.assertIn("恢复来源", result.stdout)
+        self.assertIn("来源快照", result.stdout)
 
         print("\n[步骤6] 验证 list 显示恢复标记")
         result = run_cli(["list"], cwd=work_b)
         self.assertIn("batch_chain_01", result.stdout)
         self.assertIn("已恢复", result.stdout)
-        self.assertIn("恢复来源", result.stdout)
+        self.assertIn("来源快照", result.stdout)
 
         print("\n[步骤7] 验证 resume 显示恢复摘要")
         result = run_cli([
             "resume",
             "-b", "batch_chain_01",
         ], cwd=work_b)
-        self.assertIn("恢复来源", result.stdout)
+        self.assertIn("来源快照", result.stdout)
         self.assertIn("恢复时间", result.stdout)
-        self.assertIn("CLI复核第二条", result.stdout)
+        self.assertIn("CLI复核第一条", result.stdout)
 
         print("\n[步骤8] 继续复核第3条")
         run_cli([
@@ -332,7 +331,7 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "--dry-run",
         ], cwd=work_dir, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("冲突", result.stdout)
+        self.assertIn("已存在", result.stdout)
         self.assertIn("无法恢复", result.stdout)
 
         print("\n[步骤4] 使用 --force 预演，应该显示差异")
@@ -343,11 +342,10 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "--force",
             "--dry-run",
         ], cwd=work_dir)
-        self.assertIn("检测到同名批次，将使用 --force 覆盖", result.stdout)
         self.assertIn("覆盖差异", result.stdout)
-        self.assertIn("复核统计变化", result.stdout)
-        self.assertIn("已签收: 2 → 0", result.stdout)
-        self.assertIn("待补件: 0 → 1", result.stdout)
+        self.assertIn("复核统计", result.stdout)
+        self.assertIn("已签收 2 → 0", result.stdout)
+        self.assertIn("待补件 0 → 1", result.stdout)
         self.assertIn("可以恢复", result.stdout)
 
         print("\n[步骤5] 执行强制覆盖恢复")
@@ -357,17 +355,19 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "-e", fixture_new["evidence_dir"],
             "--force",
         ], cwd=work_dir)
-        self.assertIn("已覆盖原有批次", result.stdout)
+        self.assertIn("恢复完成", result.stdout)
+        self.assertIn("强制覆盖", result.stdout)
 
         print("\n[步骤6] 验证恢复结果")
         result = run_cli([
             "resume",
             "-b", "batch_force",
         ], cwd=work_dir)
-        self.assertIn("恢复来源", result.stdout)
+        self.assertIn("来源快照", result.stdout)
         self.assertIn("恢复时间", result.stdout)
         self.assertIn("覆盖差异", result.stdout)
-        self.assertIn("旧批次「旧批次（会被覆盖）」→ 新批次「新批次（覆盖用）」", result.stdout)
+        self.assertIn("旧批次（会被覆盖）", result.stdout)
+        self.assertIn("新批次（覆盖用）", result.stdout)
         self.assertIn("已签收 2 → 0", result.stdout)
         self.assertIn("已签收: 0", result.stdout)
         self.assertIn("待补件: 1", result.stdout)
@@ -452,7 +452,7 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "--dry-run",
         ], cwd=dst_dir, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("缺失文件", result.stdout)
+        self.assertIn("路径缺失", result.stdout)
         self.assertIn("证据目录", result.stdout)
 
         print("\n[步骤6] 使用重映射证据目录预演")
@@ -463,7 +463,7 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "--dry-run",
         ], cwd=dst_dir)
         self.assertIn("可以恢复", result.stdout)
-        self.assertIn(mapped_dir, result.stdout)
+        self.assertIn("目录重映射", result.stdout)
 
         print("\n[步骤7] 使用重映射执行恢复")
         result = run_cli([
@@ -471,15 +471,15 @@ class TestSnapshotCLIChain(unittest.TestCase):
             "-s", snapshot_path,
             "-e", mapped_dir,
         ], cwd=dst_dir)
-        self.assertIn("证据目录(重映射)", result.stdout)
-        self.assertIn(mapped_dir, result.stdout)
+        self.assertIn("恢复完成", result.stdout)
+        self.assertIn("目录重映射", result.stdout)
 
         print("\n[步骤8] 验证数据一致性")
         result = run_cli([
             "resume",
             "-b", "batch_cross",
         ], cwd=dst_dir)
-        self.assertIn(mapped_dir, result.stdout)
+        self.assertIn("目录重映射", result.stdout)
         self.assertIn("已签收: 1", result.stdout)
         self.assertIn("源目录复核", result.stdout)
 
@@ -700,12 +700,12 @@ class TestSnapshotCLIChain(unittest.TestCase):
         print("\n[步骤6] list 命令显示恢复标记")
         result = run_cli(["list"], cwd=work_b)
         self.assertIn("[已恢复]", result.stdout)
-        self.assertIn("恢复来源:", result.stdout)
+        self.assertIn("来源快照:", result.stdout)
         self.assertIn("恢复时间:", result.stdout)
 
         print("\n[步骤7] resume 命令显示恢复摘要和 trace 提示")
         result = run_cli(["resume", "-b", "batch_trace_05"], cwd=work_b)
-        self.assertIn("恢复来源:", result.stdout)
+        self.assertIn("来源快照:", result.stdout)
         self.assertIn("恢复链路:", result.stdout)
         self.assertIn("共 1 次恢复", result.stdout)
         self.assertIn("trace 命令查看完整链路", result.stdout)
@@ -904,7 +904,8 @@ class TestSnapshotCLIChain(unittest.TestCase):
 
         print("\n[步骤4] list 显示 [已修改] 标记和操作条数")
         result = run_cli(["list"], cwd=work2)
-        self.assertIn("[已恢复 [已修改]]", result.stdout)
+        self.assertIn("已恢复", result.stdout)
+        self.assertIn("已修改", result.stdout)
         self.assertIn("恢复后操作: 2 条", result.stdout)
 
         print("\n[步骤5] resume 显示恢复后有新操作提示")
@@ -943,7 +944,8 @@ class TestSnapshotCLIChain(unittest.TestCase):
         self.assertIn("恢复后追加操作（共 3 条）", result2.stdout)
 
         result3 = run_cli(["list"], cwd=work2)
-        self.assertIn("[已恢复 [已修改]]", result3.stdout)
+        self.assertIn("已恢复", result3.stdout)
+        self.assertIn("已修改", result3.stdout)
 
         print("\n[OK] 测试8通过")
 

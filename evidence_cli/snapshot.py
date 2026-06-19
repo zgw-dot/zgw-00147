@@ -669,6 +669,347 @@ def list_snapshots(work_dir: str) -> List[Dict]:
     return snapshots
 
 
+def build_recovery_summary(db_path: str, batch_no: str) -> Optional[Dict]:
+    """
+    构建统一的、可对账的恢复摘要。
+
+    这是所有恢复相关视图（trace / list / resume / export）的单一事实来源。
+    从持久化数据（batches、restore_events、evidence_items、review_logs）动态聚合，
+    重启 CLI 后查询结果完全一致。
+
+    返回 None 表示批次不存在。从未恢复的批次同样返回结构（source_snapshot 为 None）。
+
+    返回结构：
+        {
+            "batch_no": str,
+            "has_restore": bool,
+            "source_snapshot": {           # 来源快照
+                "path": str,
+                "exists": bool,
+                "created_at": Optional[float],
+            } | None,
+            "overwrite_diff": Optional[Dict],  # 覆盖差异（仅 force 覆盖时有值）
+            "last_review_log": Optional[Dict], # 快照内 / 当前最后一条复核记录（含 file_path）
+            "post_restore_ops": {              # 恢复后新增操作数
+                "count": int,
+                "review_count": int,
+                "undo_count": int,
+            },
+            "restore_event": {                 # 最近一次恢复事件详情
+                "event_id": int,
+                "restored_at": float,
+                "was_force": bool,
+                "was_remapped": bool,
+                "operator": Optional[str],
+                "parent_event_id": Optional[int],
+            } | None,
+            "precheck_stats": Dict,            # 预检统计 (total/passed/failed/unchecked)
+            "review_stats": Dict,              # 复核统计 (total/signed/supplement/pending)
+            "item_count": int,                 # 证据项总数
+            "reconciled": bool,                # 对账是否通过
+            "reconciliation_details": {
+                "item_count_consistent": bool,
+                "review_stats_consistent": bool,
+                "post_restore_count_consistent": bool,
+            },
+            "warnings": List[str],
+        }
+    """
+    import json as _json
+    from . import db as db_mod
+
+    batch = db_mod.get_batch_by_no(db_path, batch_no)
+    if not batch:
+        return None
+
+    batch_id = batch["id"]
+    items = db_mod.get_evidence_items(db_path, batch_id)
+
+    total_pc, passed_pc, failed_pc, unchecked_pc = db_mod.count_precheck(db_path, batch_id)
+    total_rv, signed_rv, supp_rv, pend_rv = db_mod.count_reviewed(db_path, batch_id)
+
+    precheck_stats = {
+        "total": total_pc,
+        "passed": passed_pc,
+        "failed": failed_pc,
+        "unchecked": unchecked_pc,
+    }
+    review_stats = {
+        "total": total_rv,
+        "signed": signed_rv,
+        "supplement": supp_rv,
+        "pending": pend_rv,
+    }
+
+    last_review_log = None
+    last_raw = db_mod.get_last_review_log(db_path, batch_id)
+    if last_raw:
+        last_item = db_mod.get_evidence_item_by_id(db_path, last_raw["item_id"])
+        last_review_log = {
+            "id": last_raw.get("id"),
+            "action": last_raw.get("action"),
+            "item_id": last_raw.get("item_id"),
+            "prev_status": last_raw.get("prev_status"),
+            "new_status": last_raw.get("new_status"),
+            "prev_remark": last_raw.get("prev_remark"),
+            "new_remark": last_raw.get("new_remark"),
+            "operator": last_raw.get("operator"),
+            "created_at": last_raw.get("created_at"),
+            "file_path": last_item.get("file_path") if last_item else None,
+            "manifest_line_no": last_item.get("manifest_line_no") if last_item else None,
+        }
+
+    events_raw = db_mod.get_restore_events_for_batch(db_path, batch_no=batch_no)
+    has_chain = len(events_raw) > 0
+
+    warnings: List[str] = []
+    source_snapshot = None
+    overwrite_diff = None
+    restore_event = None
+    post_restore_ops = {"count": 0, "review_count": 0, "undo_count": 0}
+
+    if has_chain:
+        last_evt = events_raw[-1]
+
+        snapshot_path = last_evt["snapshot_path"]
+        snapshot_exists = os.path.isfile(snapshot_path)
+        if not snapshot_exists:
+            warnings.append("来源快照文件已不存在，无法再次从此源恢复")
+
+        source_snapshot = {
+            "path": snapshot_path,
+            "exists": snapshot_exists,
+            "created_at": last_evt.get("snapshot_created_at"),
+        }
+
+        if last_evt.get("restore_diff"):
+            try:
+                overwrite_diff = _json.loads(last_evt["restore_diff"])
+            except (_json.JSONDecodeError, TypeError):
+                warnings.append("恢复差异数据损坏，无法解析")
+                overwrite_diff = None
+
+        restore_event = {
+            "event_id": last_evt["id"],
+            "restored_at": last_evt["restored_at"],
+            "was_force": bool(last_evt["was_force"]),
+            "was_remapped": bool(last_evt["was_remapped"]),
+            "operator": last_evt.get("operator"),
+            "parent_event_id": last_evt.get("parent_restore_event_id"),
+        }
+
+        post_activity = db_mod.get_review_logs_after_time(
+            db_path, batch_id, last_evt["restored_at"]
+        )
+        review_count = sum(1 for l in post_activity if l["action"] != "undo")
+        undo_count = sum(1 for l in post_activity if l["action"] == "undo")
+        post_restore_ops = {
+            "count": len(post_activity),
+            "review_count": review_count,
+            "undo_count": undo_count,
+        }
+        if post_restore_ops["count"] > 0:
+            warnings.append(
+                f"恢复后有 {post_restore_ops['count']} 条新操作"
+                f"（复核 {review_count} 条，撤销 {undo_count} 条）"
+            )
+
+        event_by_id = {e["id"]: e for e in events_raw}
+        for e in events_raw:
+            if e.get("parent_restore_event_id") is not None:
+                pid = e["parent_restore_event_id"]
+                if pid not in event_by_id:
+                    warnings.append(
+                        f"恢复链路断档：事件 #{e['id']} 的父事件 #{pid} 未找到"
+                    )
+
+        missing_count = sum(1 for e in events_raw if not os.path.isfile(e["snapshot_path"]))
+        if missing_count > 0 and missing_count == len(events_raw):
+            warnings.append(
+                f"全部 {len(events_raw)} 次恢复的源快照均已丢失"
+            )
+        elif missing_count > 0:
+            warnings.append(
+                f"{missing_count} / {len(events_raw)} 次恢复的源快照已丢失"
+            )
+
+    elif batch.get("restored_from"):
+        snapshot_path = batch["restored_from"]
+        snapshot_exists = os.path.isfile(snapshot_path)
+        source_snapshot = {
+            "path": snapshot_path,
+            "exists": snapshot_exists,
+            "created_at": None,
+        }
+        if not snapshot_exists:
+            warnings.append("来源快照文件已不存在")
+        if batch.get("restore_diff"):
+            try:
+                overwrite_diff = _json.loads(batch["restore_diff"])
+            except (_json.JSONDecodeError, TypeError):
+                warnings.append("恢复差异数据损坏，无法解析")
+        warnings.append("旧版本恢复数据，仅含基础来源信息（无完整恢复链路）")
+
+    item_count_consistent = len(items) == precheck_stats["total"] == review_stats["total"]
+
+    review_stats_consistent = (
+        review_stats["signed"] + review_stats["supplement"] + review_stats["pending"]
+        == review_stats["total"]
+    )
+
+    post_count_from_db = post_restore_ops["count"]
+    post_restore_count_consistent = True
+    if has_chain:
+        last_evt = events_raw[-1]
+        post_activity_check = db_mod.get_review_logs_after_time(
+            db_path, batch_id, last_evt["restored_at"]
+        )
+        post_restore_count_consistent = len(post_activity_check) == post_count_from_db
+
+    reconciled = (
+        item_count_consistent
+        and review_stats_consistent
+        and post_restore_count_consistent
+    )
+
+    if not item_count_consistent:
+        warnings.append(
+            f"对账告警：证据项数不一致 items={len(items)} "
+            f"precheck.total={precheck_stats['total']} "
+            f"review.total={review_stats['total']}"
+        )
+    if not review_stats_consistent:
+        warnings.append(
+            f"对账告警：复核统计不一致 "
+            f"signed+supplement+pending="
+            f"{review_stats['signed'] + review_stats['supplement'] + review_stats['pending']} "
+            f"!= total={review_stats['total']}"
+        )
+    if not post_restore_count_consistent:
+        warnings.append("对账告警：恢复后操作计数与实际记录数不符")
+
+    return {
+        "batch_no": batch_no,
+        "has_restore": has_chain or batch.get("restored_from") is not None,
+        "source_snapshot": source_snapshot,
+        "overwrite_diff": overwrite_diff,
+        "last_review_log": last_review_log,
+        "post_restore_ops": post_restore_ops,
+        "restore_event": restore_event,
+        "precheck_stats": precheck_stats,
+        "review_stats": review_stats,
+        "item_count": len(items),
+        "reconciled": reconciled,
+        "reconciliation_details": {
+            "item_count_consistent": item_count_consistent,
+            "review_stats_consistent": review_stats_consistent,
+            "post_restore_count_consistent": post_restore_count_consistent,
+        },
+        "warnings": warnings,
+    }
+
+
+def build_recovery_summary_from_preview(preview: Dict) -> Dict:
+    """
+    根据预演结果构建与 build_recovery_summary 同构的摘要。
+
+    用于预演（dry-run）阶段，让用户在落库前就能看到与恢复后一致的摘要结构，
+    判断这份快照值不值得恢复。
+    """
+    import json as _json
+
+    has_diff = preview.get("diff") is not None
+    overwrite_diff = preview.get("diff")
+    last_review_log = preview.get("last_log")
+
+    post_restore_ops = {"count": 0, "review_count": 0, "undo_count": 0}
+
+    precheck_stats = preview.get("precheck_stats", {
+        "total": 0, "passed": 0, "failed": 0, "unchecked": 0,
+    })
+    review_stats = preview.get("review_stats", {
+        "total": 0, "signed": 0, "supplement": 0, "pending": 0,
+    })
+
+    warnings: List[str] = []
+
+    if not preview.get("can_restore", False):
+        if preview.get("conflict_reason"):
+            warnings.append(f"恢复受阻：{preview['conflict_reason']}")
+        if preview.get("missing_reason"):
+            warnings.append(preview["missing_reason"])
+
+    snapshot_path = preview.get("snapshot_path", "")
+    snapshot_exists = os.path.isfile(snapshot_path) if snapshot_path else False
+
+    source_snapshot = {
+        "path": snapshot_path,
+        "exists": snapshot_exists,
+        "created_at": None,
+    }
+
+    restore_event = None
+    if preview.get("can_restore"):
+        restore_event = {
+            "event_id": None,
+            "restored_at": None,
+            "was_force": bool(preview.get("will_conflict") and preview.get("can_restore")),
+            "was_remapped": bool(preview.get("evidence_remapped")),
+            "operator": None,
+            "parent_event_id": None,
+        }
+
+    item_count = preview.get("item_count", 0)
+
+    item_count_consistent = (
+        item_count == precheck_stats.get("total", 0) == review_stats.get("total", 0)
+    )
+    review_stats_consistent = (
+        review_stats.get("signed", 0)
+        + review_stats.get("supplement", 0)
+        + review_stats.get("pending", 0)
+        == review_stats.get("total", 0)
+    )
+    can_restore = preview.get("can_restore", False)
+    reconciled = item_count_consistent and review_stats_consistent and can_restore
+
+    if not can_restore:
+        warnings.append("对账告警：预演结果表明无法恢复，数据未落地")
+    if not item_count_consistent:
+        warnings.append(
+            f"对账告警：证据项数不一致 item_count={item_count} "
+            f"precheck.total={precheck_stats.get('total')} "
+            f"review.total={review_stats.get('total')}"
+        )
+    if not review_stats_consistent:
+        warnings.append(
+            f"对账告警：复核统计不一致 "
+            f"signed+supplement+pending="
+            f"{review_stats.get('signed', 0) + review_stats.get('supplement', 0) + review_stats.get('pending', 0)} "
+            f"!= total={review_stats.get('total', 0)}"
+        )
+
+    return {
+        "batch_no": preview.get("batch_no", ""),
+        "has_restore": True,
+        "source_snapshot": source_snapshot,
+        "overwrite_diff": overwrite_diff,
+        "last_review_log": last_review_log,
+        "post_restore_ops": post_restore_ops,
+        "restore_event": restore_event,
+        "precheck_stats": precheck_stats,
+        "review_stats": review_stats,
+        "item_count": item_count,
+        "reconciled": reconciled,
+        "reconciliation_details": {
+            "item_count_consistent": item_count_consistent,
+            "review_stats_consistent": review_stats_consistent,
+            "post_restore_count_consistent": True,
+        },
+        "warnings": warnings,
+    }
+
+
 def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
     """
     构建批次的完整恢复链路追踪信息。
@@ -679,6 +1020,7 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
             "batch_no": str,
             "batch_id": int,
             "batch": dict,  # 完整批次记录
+            "recovery_summary": dict,  # 统一恢复摘要（与 build_recovery_summary 同构）
             "events": [     # 按时间顺序（从最早到最近）的恢复事件
                 {
                     "event_id": int,
@@ -804,10 +1146,13 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
             "批次标记为已恢复，但缺少 restore_events 明细（旧版本数据，链路不可追溯）"
         )
 
+    recovery_summary = build_recovery_summary(db_path, batch_no)
+
     return {
         "batch_no": batch_no,
         "batch_id": batch_id,
         "batch": batch,
+        "recovery_summary": recovery_summary,
         "events": events,
         "post_restore_activity": post_activity,
         "modified_after_restore": modified_after,

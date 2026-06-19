@@ -1,0 +1,152 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "reviewbatch",
+    "description": "版本一",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+    "created_at": 1781908156.7433054,
+    "updated_at": 1781908166.9492965,
+    "restore": {
+      "restored_from": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v1.json",
+      "restored_at": 1781908215.564932
+    }
+  },
+  "statistics": {
+    "precheck": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review": {
+      "total": 3,
+      "signed": 1,
+      "supplement": 0,
+      "pending": 2
+    }
+  },
+  "items": [
+    {
+      "id": 1,
+      "file_path": "docs/evidence_a.txt",
+      "manifest_line_no": 2,
+      "expected_size": 48,
+      "actual_size": 48,
+      "expected_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
+      "actual_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
+      "precheck_status": "passed",
+      "review_status": "signed",
+      "review_remark": "初版签收",
+      "reviewed_at": 1781908166.9492965
+    },
+    {
+      "id": 2,
+      "file_path": "transaction.csv",
+      "manifest_line_no": 3,
+      "expected_size": 23,
+      "actual_size": 23,
+      "expected_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "actual_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    },
+    {
+      "id": 3,
+      "file_path": "images/screenshot.png",
+      "manifest_line_no": 4,
+      "expected_size": 38,
+      "actual_size": 38,
+      "expected_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "actual_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "recovery_summary": {
+    "batch_no": "reviewbatch",
+    "has_restore": true,
+    "source_snapshot": {
+      "path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v1.json",
+      "exists": true,
+      "created_at": 1781908173.3188822
+    },
+    "overwrite_diff": null,
+    "last_review_log": {
+      "id": 1,
+      "action": "review",
+      "item_id": 1,
+      "prev_status": "pending",
+      "new_status": "signed",
+      "prev_remark": null,
+      "new_remark": "初版签收",
+      "operator": "reviewerA",
+      "created_at": 1781908166.9492965,
+      "file_path": "docs/evidence_a.txt",
+      "manifest_line_no": 2
+    },
+    "post_restore_ops": {
+      "count": 0,
+      "review_count": 0,
+      "undo_count": 0
+    },
+    "restore_event": {
+      "event_id": 1,
+      "restored_at": 1781908215.564932,
+      "was_force": false,
+      "was_remapped": false,
+      "operator": "restorer1",
+      "parent_event_id": null
+    },
+    "precheck_stats": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review_stats": {
+      "total": 3,
+      "signed": 1,
+      "supplement": 0,
+      "pending": 2
+    },
+    "item_count": 3,
+    "reconciled": true,
+    "reconciliation_details": {
+      "item_count_consistent": true,
+      "review_stats_consistent": true,
+      "post_restore_count_consistent": true
+    },
+    "warnings": []
+  },
+  "restore_trace": {
+    "event_count": 1,
+    "modified_after_restore": false,
+    "warnings": [],
+    "events": [
+      {
+        "event_id": 1,
+        "restored_at": 1781908215.564932,
+        "snapshot_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_a01_source_clean\\reviewbatch_v1.json",
+        "snapshot_exists": true,
+        "snapshot_created_at": 1781908173.3188822,
+        "parent_event_id": null,
+        "was_force": false,
+        "was_remapped": false,
+        "evidence_dir_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+        "evidence_dir_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+        "manifest_path_before": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+        "manifest_path_after": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+        "old_batch_snapshot": null,
+        "restore_diff": null,
+        "operator": "restorer1",
+        "chain_ok": true,
+        "warnings": []
+      }
+    ]
+  }
+}

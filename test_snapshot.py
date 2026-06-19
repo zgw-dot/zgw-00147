@@ -1480,5 +1480,669 @@ class TestSnapshot(unittest.TestCase):
         self.assertEqual(trace2["events"][0]["operator"], "first")
 
 
+class TestRecoverySummaryRegression(unittest.TestCase):
+    """回归测试组1：同名批次冲突和来源快照缺失的提示清晰度 + 统一恢复摘要一致性"""
+
+    def setUp(self):
+        self.work_dir = tempfile.mkdtemp(prefix="evi_reg1_")
+        self.db_path = db.get_db_path(self.work_dir)
+        db.init_db(self.db_path)
+        self.evidence_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "sample_evidence",
+        )
+        self.manifest_path = os.path.join(self.evidence_dir, "manifest_mixed.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.work_dir, ignore_errors=True)
+
+    def _import_batch(self, batch_no="test_batch", description="测试批次"):
+        result = manifest_mod.parse_manifest(self.manifest_path)
+        valid_items = [item for item in result.items if item["manifest_line_no"] in [2, 3, 4]]
+        batch_id, count = db.replace_batch(
+            self.db_path,
+            batch_no=batch_no,
+            manifest_path=self.manifest_path,
+            evidence_dir=self.evidence_dir,
+            items=valid_items,
+            description=description,
+        )
+        return batch_id, count
+
+    def _create_isolated_fixture(self, base_dir: str):
+        evidence_dir = os.path.join(base_dir, "evidence")
+        os.makedirs(os.path.join(evidence_dir, "docs"), exist_ok=True)
+        os.makedirs(os.path.join(evidence_dir, "images"), exist_ok=True)
+        file_a = os.path.join(evidence_dir, "docs", "a.txt")
+        file_b = os.path.join(evidence_dir, "docs", "b.txt")
+        file_c = os.path.join(evidence_dir, "images", "c.png")
+        for p, content in [(file_a, b"content of a 1234567890123456789012345678"),
+                           (file_b, b"content of b 12345678901234567890123456789012"),
+                           (file_c, b"png-bytes-here-1234567890123456789012345678901")]:
+            with open(p, "wb") as f:
+                f.write(content)
+        import hashlib
+        def sha(p):
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                h.update(f.read())
+            return h.hexdigest()
+        manifest_path = os.path.join(base_dir, "manifest.csv")
+        import csv
+        with open(manifest_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["file_path", "size", "sha256"])
+            w.writerow(["docs/a.txt", os.path.getsize(file_a), sha(file_a)])
+            w.writerow(["docs/b.txt", os.path.getsize(file_b), sha(file_b)])
+            w.writerow(["images/c.png", os.path.getsize(file_c), sha(file_c)])
+        parsed = manifest_mod.parse_manifest(manifest_path)
+        return manifest_path, evidence_dir, parsed.items
+
+    def _import_batch_isolated(self, batch_no: str, description: str = "隔离批次"):
+        fixture_dir = os.path.join(self.work_dir, f"fixture_{batch_no}")
+        os.makedirs(fixture_dir, exist_ok=True)
+        manifest_path, evidence_dir, items = self._create_isolated_fixture(fixture_dir)
+        batch_id, count = db.replace_batch(
+            self.db_path,
+            batch_no=batch_no,
+            manifest_path=manifest_path,
+            evidence_dir=evidence_dir,
+            items=items,
+            description=description,
+        )
+        return batch_id, count, manifest_path, evidence_dir, items
+
+    def _review_some_items(self, batch_id: int):
+        items = db.get_evidence_items(self.db_path, batch_id)
+        log_ids = []
+        for i, item in enumerate(items[:2]):
+            status = "signed" if i == 0 else "supplement"
+            log_id = db.review_item(
+                self.db_path,
+                batch_id=batch_id,
+                item_id=item["id"],
+                new_status=status,
+                remark=f"测试备注{i + 1}",
+                operator="tester",
+                action="review",
+            )
+            log_ids.append(log_id)
+        return log_ids
+
+    def test_conflict_error_message_is_clear(self):
+        """同名批次冲突时，异常消息包含批次号和 --force 提示"""
+        self._import_batch(batch_no="conflict_batch", description="已存在批次")
+        batch_id2, _, m2, e2, _ = self._import_batch_isolated("conflict_batch", "新批次")
+        self._review_some_items(batch_id2)
+        snapshot_path = os.path.join(self.work_dir, "conflict_snap.json")
+        snapshot_mod.save_snapshot(self.db_path, "conflict_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "conflict_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        fixture_dir2 = os.path.join(new_work, "fixture_existing")
+        os.makedirs(fixture_dir2, exist_ok=True)
+        m3, e3, items3 = self._create_isolated_fixture(fixture_dir2)
+        db.replace_batch(new_db, "conflict_batch", m3, e3, items3, "目标目录已存在批次")
+
+        with self.assertRaises(snapshot_mod.SnapshotConflictError) as ctx:
+            snapshot_mod.restore_snapshot(new_db, snapshot_path, force=False)
+
+        msg = str(ctx.exception)
+        self.assertIn("conflict_batch", msg)
+        self.assertIn("--force", msg)
+        self.assertIn("已存在", msg)
+
+    def test_conflict_preview_shows_clear_reason(self):
+        """预演冲突时，conflict_reason 清晰，摘要 warnings 包含受阻信息"""
+        self._import_batch(batch_no="prev_conflict", description="已有批次")
+        batch_id2, _, m2, e2, _ = self._import_batch_isolated("prev_conflict", "快照批次")
+        self._review_some_items(batch_id2)
+        snapshot_path = os.path.join(self.work_dir, "prev_conflict.json")
+        snapshot_mod.save_snapshot(self.db_path, "prev_conflict", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "prev_conflict_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        fixture_dir2 = os.path.join(new_work, "fix_exist")
+        os.makedirs(fixture_dir2, exist_ok=True)
+        m3, e3, items3 = self._create_isolated_fixture(fixture_dir2)
+        db.replace_batch(new_db, "prev_conflict", m3, e3, items3, "已存在")
+
+        preview = snapshot_mod.preview_restore(new_db, snapshot_path, force=False)
+        self.assertFalse(preview["can_restore"])
+        self.assertTrue(preview["will_conflict"])
+        self.assertIn("prev_conflict", preview["conflict_reason"])
+        self.assertIn("--force", preview["conflict_reason"])
+
+        summary = snapshot_mod.build_recovery_summary_from_preview(preview)
+        self.assertFalse(summary["reconciled"])
+        has_conflict_warn = any("恢复受阻" in w for w in summary["warnings"])
+        self.assertTrue(has_conflict_warn, f"warnings 应含恢复受阻: {summary['warnings']}")
+
+    def test_source_snapshot_missing_warning_is_clear(self):
+        """来源快照文件缺失时，build_recovery_summary 给出清晰警告"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("miss_src", "缺失源批次")
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "miss_src.json")
+        snapshot_mod.save_snapshot(self.db_path, "miss_src", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "miss_src_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="src_test")
+
+        self.assertTrue(os.path.exists(snapshot_path))
+        os.remove(snapshot_path)
+        self.assertFalse(os.path.exists(snapshot_path))
+
+        summary = snapshot_mod.build_recovery_summary(new_db, "miss_src")
+        self.assertIsNotNone(summary)
+        self.assertTrue(summary["has_restore"])
+
+        src = summary["source_snapshot"]
+        self.assertIsNotNone(src)
+        self.assertFalse(src["exists"])
+        self.assertEqual(src["path"], os.path.abspath(snapshot_path))
+
+        has_missing_warn = any(
+            "已不存在" in w or "已丢失" in w or "源快照" in w
+            for w in summary["warnings"]
+        )
+        self.assertTrue(has_missing_warn, f"warnings 应含快照缺失: {summary['warnings']}")
+
+        trace = snapshot_mod.build_trace(new_db, "miss_src")
+        self.assertIn("recovery_summary", trace)
+        self.assertFalse(trace["recovery_summary"]["source_snapshot"]["exists"])
+
+    def test_manifest_missing_error_is_clear(self):
+        """清单文件缺失时，异常消息包含具体文件路径"""
+        batch_id, _, orig_manifest, orig_evidence, _ = self._import_batch_isolated(
+            "miss_manifest", "清单缺失批次"
+        )
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "miss_manifest.json")
+        snapshot_mod.save_snapshot(self.db_path, "miss_manifest", snapshot_path)
+        os.remove(orig_manifest)
+
+        new_work = os.path.join(self.work_dir, "miss_m_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+
+        with self.assertRaises(snapshot_mod.SnapshotMissingFilesError) as ctx:
+            snapshot_mod.restore_snapshot(new_db, snapshot_path)
+
+        msg = str(ctx.exception)
+        self.assertIn("清单文件", msg)
+        self.assertIn(orig_manifest, msg)
+
+        preview = snapshot_mod.preview_restore(new_db, snapshot_path)
+        self.assertFalse(preview["can_restore"])
+        self.assertIn("missing_reason", preview)
+        self.assertIn("清单文件", preview["missing_reason"])
+        self.assertIn(orig_manifest, preview["missing_reason"])
+
+    def test_summary_consistency_across_views(self):
+        """普通恢复后，build_recovery_summary 在 resume/list/trace 中返回一致数据"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("consist_batch", "一致性测试")
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "consist.json")
+        snapshot_mod.save_snapshot(self.db_path, "consist_batch", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "consist_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="consist_op")
+
+        s1 = snapshot_mod.build_recovery_summary(new_db, "consist_batch")
+        s2 = snapshot_mod.build_recovery_summary(new_db, "consist_batch")
+
+        self.assertEqual(s1["batch_no"], s2["batch_no"])
+        self.assertEqual(s1["source_snapshot"]["path"], s2["source_snapshot"]["path"])
+        self.assertEqual(s1["source_snapshot"]["exists"], s2["source_snapshot"]["exists"])
+        self.assertEqual(s1["review_stats"], s2["review_stats"])
+        self.assertEqual(s1["precheck_stats"], s2["precheck_stats"])
+        self.assertEqual(s1["post_restore_ops"], s2["post_restore_ops"])
+        self.assertEqual(s1["reconciled"], s2["reconciled"])
+        self.assertEqual(s1["item_count"], s2["item_count"])
+
+        trace = snapshot_mod.build_trace(new_db, "consist_batch")
+        self.assertIn("recovery_summary", trace)
+        s3 = trace["recovery_summary"]
+        self.assertEqual(s1["source_snapshot"]["path"], s3["source_snapshot"]["path"])
+        self.assertEqual(s1["review_stats"], s3["review_stats"])
+        self.assertEqual(s1["last_review_log"]["id"], s3["last_review_log"]["id"])
+        self.assertEqual(s1["reconciled"], s3["reconciled"])
+
+    def test_force_restore_summary_shows_diff(self):
+        """强制覆盖恢复后，恢复摘要包含覆盖差异且对账通过"""
+        old_batch_id, _, _, _, _ = self._import_batch_isolated("force_sum", "旧描述")
+        self._review_some_items(old_batch_id)
+        snapshot_path = os.path.join(self.work_dir, "force_sum.json")
+        snapshot_mod.save_snapshot(self.db_path, "force_sum", snapshot_path)
+
+        items = db.get_evidence_items(self.db_path, old_batch_id)
+        db.review_item(
+            self.db_path,
+            batch_id=old_batch_id,
+            item_id=items[0]["id"],
+            new_status="supplement",
+            remark="恢复前新增",
+            operator="before_op",
+            action="review",
+        )
+
+        _, _, summary = snapshot_mod.restore_snapshot(
+            self.db_path, snapshot_path, force=True, operator="force_op"
+        )
+        self.assertIsNotNone(summary)
+
+        recovery_summary = snapshot_mod.build_recovery_summary(self.db_path, "force_sum")
+        self.assertTrue(recovery_summary["has_restore"])
+        self.assertIsNotNone(recovery_summary["overwrite_diff"])
+        self.assertIn("old_batch", recovery_summary["overwrite_diff"])
+        self.assertIn("review_stats", recovery_summary["overwrite_diff"])
+        self.assertTrue(recovery_summary["restore_event"]["was_force"])
+        self.assertTrue(recovery_summary["reconciled"])
+        self.assertEqual(recovery_summary["post_restore_ops"]["count"], 0)
+
+        diff = recovery_summary["overwrite_diff"]
+        self.assertEqual(diff["old_batch"]["description"], "旧描述")
+        self.assertEqual(diff["new_batch"]["description"], "旧描述")
+
+    def test_summary_persists_across_db_reconnect(self):
+        """重启（重新连接数据库）后，恢复摘要数据一致"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("persist_sum", "持久化测试")
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "persist_sum.json")
+        snapshot_mod.save_snapshot(self.db_path, "persist_sum", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "persist_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="persist_op")
+
+        batch = db.get_batch_by_no(new_db, "persist_sum")
+        items = db.get_evidence_items(new_db, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        db.review_item(
+            new_db,
+            batch_id=batch["id"],
+            item_id=pending[0]["id"],
+            new_status="signed",
+            remark="恢复后复核",
+            operator="after_op",
+            action="review",
+        )
+
+        s_before = snapshot_mod.build_recovery_summary(new_db, "persist_sum")
+
+        import importlib
+        import evidence_cli.db as db_reimport
+        importlib.reload(db_reimport)
+
+        s_after = snapshot_mod.build_recovery_summary(new_db, "persist_sum")
+
+        self.assertEqual(s_before["source_snapshot"]["path"], s_after["source_snapshot"]["path"])
+        self.assertEqual(s_before["review_stats"], s_after["review_stats"])
+        self.assertEqual(s_before["post_restore_ops"], s_after["post_restore_ops"])
+        self.assertEqual(s_before["overwrite_diff"], s_after["overwrite_diff"])
+        self.assertEqual(s_before["reconciled"], s_after["reconciled"])
+        self.assertEqual(
+            s_before["last_review_log"]["new_remark"],
+            s_after["last_review_log"]["new_remark"],
+        )
+
+    def test_json_export_includes_recovery_summary(self):
+        """JSON 导出包含完整的统一恢复摘要"""
+        from evidence_cli import report as report_mod
+
+        batch_id, _, _, _, _ = self._import_batch_isolated("export_sum", "导出测试")
+        self._review_some_items(batch_id)
+        snapshot_path = os.path.join(self.work_dir, "export_sum.json")
+        snapshot_mod.save_snapshot(self.db_path, "export_sum", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "export_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="export_op")
+
+        batch = db.get_batch_by_no(new_db, "export_sum")
+        items = db.get_evidence_items(new_db, batch["id"])
+        total_pc, passed, failed, unchecked = db.count_precheck(new_db, batch["id"])
+        total_rv, signed, supp, pend = db.count_reviewed(new_db, batch["id"])
+        restore_trace = snapshot_mod.build_trace(new_db, "export_sum")
+        recovery_summary = snapshot_mod.build_recovery_summary(new_db, "export_sum")
+
+        export_path = os.path.join(new_work, "export_with_sum.json")
+        report_mod.export_json(
+            items,
+            export_path,
+            batch_info=batch,
+            precheck_stats={"total": total_pc, "passed": passed, "failed": failed, "unchecked": unchecked},
+            review_stats={"total": total_rv, "signed": signed, "supplement": supp, "pending": pend},
+            restore_trace=restore_trace,
+        )
+
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+
+        self.assertIn("recovery_summary", export_data)
+        exported_sum = export_data["recovery_summary"]
+        self.assertEqual(exported_sum["batch_no"], "export_sum")
+        self.assertEqual(
+            exported_sum["source_snapshot"]["path"],
+            os.path.abspath(snapshot_path),
+        )
+        self.assertEqual(exported_sum["review_stats"], recovery_summary["review_stats"])
+        self.assertEqual(exported_sum["precheck_stats"], recovery_summary["precheck_stats"])
+        self.assertEqual(exported_sum["post_restore_ops"], recovery_summary["post_restore_ops"])
+        self.assertEqual(exported_sum["reconciled"], recovery_summary["reconciled"])
+        self.assertIn("reconciliation_details", exported_sum)
+
+
+class TestPostRestoreUndoRegression(unittest.TestCase):
+    """回归测试组2：恢复后继续 review 再 undo，日志顺序、统计、恢复摘要都不倒退"""
+
+    def setUp(self):
+        self.work_dir = tempfile.mkdtemp(prefix="evi_reg2_")
+        self.db_path = db.get_db_path(self.work_dir)
+        db.init_db(self.db_path)
+        self.evidence_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "sample_evidence",
+        )
+        self.manifest_path = os.path.join(self.evidence_dir, "manifest_mixed.csv")
+
+    def tearDown(self):
+        shutil.rmtree(self.work_dir, ignore_errors=True)
+
+    def _create_isolated_fixture(self, base_dir: str):
+        evidence_dir = os.path.join(base_dir, "evidence")
+        os.makedirs(os.path.join(evidence_dir, "docs"), exist_ok=True)
+        os.makedirs(os.path.join(evidence_dir, "images"), exist_ok=True)
+        file_a = os.path.join(evidence_dir, "docs", "a.txt")
+        file_b = os.path.join(evidence_dir, "docs", "b.txt")
+        file_c = os.path.join(evidence_dir, "images", "c.png")
+        for p, content in [(file_a, b"content of a 1234567890123456789012345678"),
+                           (file_b, b"content of b 12345678901234567890123456789012"),
+                           (file_c, b"png-bytes-here-1234567890123456789012345678901")]:
+            with open(p, "wb") as f:
+                f.write(content)
+        import hashlib
+        def sha(p):
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                h.update(f.read())
+            return h.hexdigest()
+        manifest_path = os.path.join(base_dir, "manifest.csv")
+        import csv
+        with open(manifest_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["file_path", "size", "sha256"])
+            w.writerow(["docs/a.txt", os.path.getsize(file_a), sha(file_a)])
+            w.writerow(["docs/b.txt", os.path.getsize(file_b), sha(file_b)])
+            w.writerow(["images/c.png", os.path.getsize(file_c), sha(file_c)])
+        parsed = manifest_mod.parse_manifest(manifest_path)
+        return manifest_path, evidence_dir, parsed.items
+
+    def _import_batch_isolated(self, batch_no: str, description: str = "隔离批次"):
+        fixture_dir = os.path.join(self.work_dir, f"fixture_{batch_no}")
+        os.makedirs(fixture_dir, exist_ok=True)
+        manifest_path, evidence_dir, items = self._create_isolated_fixture(fixture_dir)
+        batch_id, count = db.replace_batch(
+            self.db_path,
+            batch_no=batch_no,
+            manifest_path=manifest_path,
+            evidence_dir=evidence_dir,
+            items=items,
+            description=description,
+        )
+        return batch_id, count, manifest_path, evidence_dir, items
+
+    def _review_item(self, db_path, batch_id, item_id, status, remark, op):
+        return db.review_item(db_path, batch_id, item_id, status, remark, op, "review")
+
+    def test_log_order_after_restore_review_undo(self):
+        """恢复→复核→撤销后，日志按时间顺序排列，undo 记录排在最后"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("log_order", "日志顺序")
+        self._review_item(self.db_path, batch_id, 1, "signed", "快照内复核1", "snap_op")
+        self._review_item(self.db_path, batch_id, 2, "supplement", "快照内复核2", "snap_op")
+
+        snapshot_path = os.path.join(self.work_dir, "log_order.json")
+        snapshot_mod.save_snapshot(self.db_path, "log_order", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "log_order_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="restore_op")
+
+        batch = db.get_batch_by_no(new_db, "log_order")
+        items = db.get_evidence_items(new_db, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self.assertGreater(len(pending), 0)
+
+        new_log_id = self._review_item(
+            new_db, batch["id"], pending[0]["id"],
+            "signed", "恢复后复核", "post_op",
+        )
+        undo_result = db.undo_last_review(new_db, batch["id"], "undo_op")
+        self.assertIsNotNone(undo_result)
+
+        history = db.get_review_history(new_db, batch["id"], limit=100)
+        history_asc = list(reversed(history))
+
+        for i in range(len(history_asc) - 1):
+            id_curr = history_asc[i]["id"]
+            id_next = history_asc[i + 1]["id"]
+            self.assertLess(
+                id_curr, id_next,
+                f"日志 #{id_curr} 应排在 #{id_next} 之前（按 id 升序）"
+            )
+
+        self.assertEqual(history[0]["action"], "undo")
+        self.assertEqual(history[0]["id"], undo_result["undo_log_id"])
+        self.assertEqual(history[0]["undo_of_id"], new_log_id)
+
+        actions_asc = [h["action"] for h in history_asc]
+        self.assertEqual(actions_asc[-1], "undo")
+        self.assertEqual(actions_asc[-2], "review")
+
+    def test_stats_do_not_regress_after_undo(self):
+        """恢复后复核再撤销，复核统计不倒退为负数或错乱"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("stats_reg", "统计不倒退")
+        self._review_item(self.db_path, batch_id, 1, "signed", "s1", "op")
+        self._review_item(self.db_path, batch_id, 2, "supplement", "s2", "op")
+
+        snapshot_path = os.path.join(self.work_dir, "stats_reg.json")
+        snapshot_mod.save_snapshot(self.db_path, "stats_reg", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "stats_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path)
+
+        batch = db.get_batch_by_no(new_db, "stats_reg")
+        t0, s0, sp0, p0 = db.count_reviewed(new_db, batch["id"])
+        self.assertEqual(s0, 1)
+        self.assertEqual(sp0, 1)
+        self.assertEqual(p0, 1)
+
+        items = db.get_evidence_items(new_db, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self._review_item(
+            new_db, batch["id"], pending[0]["id"], "signed", "恢复后复核", "post"
+        )
+        t1, s1, sp1, p1 = db.count_reviewed(new_db, batch["id"])
+        self.assertEqual(s1, s0 + 1)
+        self.assertEqual(p1, p0 - 1)
+
+        db.undo_last_review(new_db, batch["id"], "undo_op")
+        t2, s2, sp2, p2 = db.count_reviewed(new_db, batch["id"])
+        self.assertEqual(t2, t0)
+        self.assertEqual(s2, s0)
+        self.assertEqual(sp2, sp0)
+        self.assertEqual(p2, p0)
+
+        self.assertGreaterEqual(s2, 0)
+        self.assertGreaterEqual(sp2, 0)
+        self.assertGreaterEqual(p2, 0)
+        self.assertEqual(s2 + sp2 + p2, t2)
+
+    def test_recovery_summary_not_corrupted_by_post_ops(self):
+        """恢复后复核再撤销，恢复摘要的来源快照、覆盖差异、对账状态不变"""
+        old_id, _, _, _, _ = self._import_batch_isolated("corrupt_sum", "旧批次描述")
+        self._review_item(self.db_path, old_id, 1, "signed", "旧s1", "old_op")
+        self._review_item(self.db_path, old_id, 2, "supplement", "旧s2", "old_op")
+
+        snapshot_path = os.path.join(self.work_dir, "corrupt_sum.json")
+        snapshot_mod.save_snapshot(self.db_path, "corrupt_sum", snapshot_path)
+
+        extra_items = db.get_evidence_items(self.db_path, old_id)
+        self._review_item(
+            self.db_path, old_id, extra_items[0]["id"],
+            "supplement", "覆盖前追加", "before_op",
+        )
+
+        _, _, _ = snapshot_mod.restore_snapshot(
+            self.db_path, snapshot_path, force=True, operator="restore_op"
+        )
+
+        sum_after_restore = snapshot_mod.build_recovery_summary(self.db_path, "corrupt_sum")
+        src_path_after_restore = sum_after_restore["source_snapshot"]["path"]
+        diff_after_restore = sum_after_restore["overwrite_diff"]
+        reconciled_after_restore = sum_after_restore["reconciled"]
+
+        self.assertIsNotNone(diff_after_restore)
+        self.assertTrue(reconciled_after_restore)
+        self.assertEqual(sum_after_restore["post_restore_ops"]["count"], 0)
+
+        batch = db.get_batch_by_no(self.db_path, "corrupt_sum")
+        items = db.get_evidence_items(self.db_path, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self._review_item(
+            self.db_path, batch["id"], pending[0]["id"],
+            "signed", "恢复后新增复核", "post_op",
+        )
+        db.undo_last_review(self.db_path, batch["id"], "undo_op")
+
+        sum_after_undo = snapshot_mod.build_recovery_summary(self.db_path, "corrupt_sum")
+
+        self.assertEqual(
+            sum_after_undo["source_snapshot"]["path"], src_path_after_restore,
+            "来源快照路径不应被后续操作改变"
+        )
+        self.assertEqual(
+            sum_after_undo["overwrite_diff"], diff_after_restore,
+            "覆盖差异不应被后续操作改变"
+        )
+        self.assertTrue(
+            sum_after_undo["reconciled"],
+            f"对账状态应为通过: {sum_after_undo['warnings']}"
+        )
+        self.assertEqual(
+            sum_after_undo["restore_event"]["event_id"],
+            sum_after_restore["restore_event"]["event_id"],
+            "恢复事件 ID 不应改变"
+        )
+
+        ops = sum_after_undo["post_restore_ops"]
+        self.assertEqual(ops["review_count"], 1)
+        self.assertEqual(ops["undo_count"], 1)
+        self.assertEqual(ops["count"], 2)
+
+        self.assertEqual(
+            sum_after_undo["review_stats"],
+            sum_after_restore["review_stats"],
+            "撤销后复核统计应回到恢复后初始状态"
+        )
+
+    def test_trace_post_activity_matches_summary_ops_count(self):
+        """trace 的 post_restore_activity 数量与恢复摘要 post_restore_ops.count 一致"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("trace_match", "trace匹配")
+        self._review_item(self.db_path, batch_id, 1, "signed", "snap内1", "snap")
+
+        snapshot_path = os.path.join(self.work_dir, "trace_match.json")
+        snapshot_mod.save_snapshot(self.db_path, "trace_match", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "trace_match_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path, operator="r_op")
+
+        batch = db.get_batch_by_no(new_db, "trace_match")
+        items = db.get_evidence_items(new_db, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self._review_item(new_db, batch["id"], pending[0]["id"], "signed", "post1", "p1")
+        self._review_item(new_db, batch["id"], pending[1]["id"], "supplement", "post2", "p2")
+        db.undo_last_review(new_db, batch["id"], "undo1")
+
+        trace = snapshot_mod.build_trace(new_db, "trace_match")
+        summary = snapshot_mod.build_recovery_summary(new_db, "trace_match")
+
+        self.assertEqual(
+            len(trace["post_restore_activity"]),
+            summary["post_restore_ops"]["count"],
+            "trace post_restore_activity 数量应等于恢复摘要 post_restore_ops.count"
+        )
+        self.assertTrue(trace["modified_after_restore"])
+        self.assertEqual(summary["post_restore_ops"]["review_count"], 2)
+        self.assertEqual(summary["post_restore_ops"]["undo_count"], 1)
+        self.assertEqual(summary["post_restore_ops"]["count"], 3)
+
+        actions = [log["action"] for log in trace["post_restore_activity"]]
+        self.assertEqual(actions.count("review"), 2)
+        self.assertEqual(actions.count("undo"), 1)
+
+    def test_last_review_log_updates_correctly(self):
+        """恢复后复核再撤销，最后一条复核记录正确切换"""
+        batch_id, _, _, _, _ = self._import_batch_isolated("last_log", "最后日志")
+        self._review_item(self.db_path, batch_id, 1, "signed", "初始复核", "init_op")
+
+        snapshot_path = os.path.join(self.work_dir, "last_log.json")
+        snapshot_mod.save_snapshot(self.db_path, "last_log", snapshot_path)
+
+        new_work = os.path.join(self.work_dir, "last_log_work")
+        os.makedirs(new_work, exist_ok=True)
+        new_db = db.get_db_path(new_work)
+        db.init_db(new_db)
+        snapshot_mod.restore_snapshot(new_db, snapshot_path)
+
+        batch = db.get_batch_by_no(new_db, "last_log")
+        sum0 = snapshot_mod.build_recovery_summary(new_db, "last_log")
+        self.assertEqual(sum0["last_review_log"]["new_remark"], "初始复核")
+        self.assertEqual(sum0["last_review_log"]["action"], "review")
+
+        items = db.get_evidence_items(new_db, batch["id"])
+        pending = [i for i in items if i["review_status"] == "pending"]
+        self._review_item(
+            new_db, batch["id"], pending[0]["id"],
+            "supplement", "恢复后新复核", "post_op",
+        )
+        sum1 = snapshot_mod.build_recovery_summary(new_db, "last_log")
+        self.assertEqual(sum1["last_review_log"]["new_remark"], "恢复后新复核")
+        self.assertEqual(sum1["last_review_log"]["new_status"], "supplement")
+
+        undo_result = db.undo_last_review(new_db, batch["id"], "undo_op")
+        self.assertIsNotNone(undo_result)
+
+        sum2 = snapshot_mod.build_recovery_summary(new_db, "last_log")
+        self.assertEqual(sum2["last_review_log"]["action"], "review")
+        self.assertEqual(sum2["last_review_log"]["new_remark"], "初始复核")
+        self.assertEqual(sum2["last_review_log"]["new_status"], "signed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

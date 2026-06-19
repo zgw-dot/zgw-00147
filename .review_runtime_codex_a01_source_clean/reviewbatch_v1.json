@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "snapshot_created_at": 1781908173.3188822,
+  "batch": {
+    "batch_no": "reviewbatch",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_inputs_codex_a01\\manifest_v1.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\sample_evidence",
+    "description": "版本一",
+    "created_at": 1781908156.7433054,
+    "updated_at": 1781908166.9492965
+  },
+  "items": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "file_path": "docs/evidence_a.txt",
+      "expected_size": 48,
+      "expected_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
+      "manifest_line_no": 2,
+      "actual_size": 48,
+      "actual_sha256": "c971f91153b8d3e510b450fcdefea44e18f03ee0e7f958ba20fd6a86a2feea48",
+      "precheck_status": "passed",
+      "review_status": "signed",
+      "review_remark": "初版签收",
+      "reviewed_at": 1781908166.9492965
+    },
+    {
+      "id": 2,
+      "batch_id": 1,
+      "file_path": "transaction.csv",
+      "expected_size": 23,
+      "expected_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "manifest_line_no": 3,
+      "actual_size": 23,
+      "actual_sha256": "e100e478332170dc75edd424cdffad5d2aa7c639893ec30a98cb52cc4a57e1b6",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    },
+    {
+      "id": 3,
+      "batch_id": 1,
+      "file_path": "images/screenshot.png",
+      "expected_size": 38,
+      "expected_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "manifest_line_no": 4,
+      "actual_size": 38,
+      "actual_sha256": "c771d8e8219ff387ddc24b6d273fb71eb05670a6f52af96ca69506a5b2c3a7b4",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "review_logs": [
+    {
+      "id": 1,
+      "batch_id": 1,
+      "item_id": 1,
+      "prev_status": "pending",
+      "prev_remark": null,
+      "new_status": "signed",
+      "new_remark": "初版签收",
+      "action": "review",
+      "operator": "reviewerA",
+      "undone": 0,
+      "undo_of_id": null,
+      "created_at": 1781908166.9492965,
+      "file_path": "docs/evidence_a.txt"
+    }
+  ]
+}
