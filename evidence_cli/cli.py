@@ -1498,11 +1498,13 @@ def playbook_history(ctx, batch_no, limit):
               help="步骤描述（可多次指定），格式: type[:detail]")
 @click.option("--from-csv", "csv_path", default=None,
               type=click.Path(exists=True, dir_okay=False), help="从 CSV 模板生成")
-@click.option("--from-last-run", is_flag=True, help="从最近一次剧本运行记录生成")
+@click.option("--from-last-run", is_flag=True, help="从最近一次剧本运行记录生成（无剧本记录时自动回退到最近操作）")
+@click.option("--from-recent-ops", "from_recent_ops", is_flag=True,
+              help="从最近真实操作记录生成（review/undo，即使没跑过剧本也能用）")
 @click.option("--name", "-n", "playbook_name", default=None, help="剧本名称（保存到库时使用）")
 @click.option("--operator", default="", help="操作人")
 @click.option("--description", "-d", default="", help="剧本描述")
-@click.option("--output-file", default="", help="剧本级输出文件路径")
+@click.option("--output-file", default="", help="剧本级输出文件路径（会自动追加 export 步骤）")
 @click.option("--filter-status", "-f", default="",
               type=click.Choice(["", "all", "pending", "signed", "supplement", "failed_precheck"]),
               help="全局筛选状态（步骤级未指定时生效）")
@@ -1512,15 +1514,15 @@ def playbook_history(ctx, batch_no, limit):
 @click.option("--overwrite", is_flag=True, help="覆盖同名剧本（配合 --save）")
 @click.option("--output", "output_path", default=None, help="剧本 JSON 输出文件路径")
 @click.pass_context
-def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, playbook_name,
-                      operator, description, output_file, filter_status, line_range,
-                      remark_template, save_to_lib, overwrite, output_path):
-    """生成剧本：从命令参数、CSV 模板或最近一次批次操作记录"""
+def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, from_recent_ops,
+                      playbook_name, operator, description, output_file, filter_status,
+                      line_range, remark_template, save_to_lib, overwrite, output_path):
+    """生成剧本：从命令参数、CSV 模板、最近操作记录或最近剧本运行记录"""
     db_path = ensure_db(ctx)
 
-    source_count = sum(1 for s in [steps, csv_path, from_last_run] if s)
+    source_count = sum(1 for s in [steps, csv_path, from_last_run, from_recent_ops] if s)
     if source_count == 0:
-        click.echo("错误: 必须指定至少一种生成来源 (--step / --from-csv / --from-last-run)", err=True)
+        click.echo("错误: 必须指定至少一种生成来源 (--step / --from-csv / --from-last-run / --from-recent-ops)", err=True)
         sys.exit(1)
     if source_count > 1:
         click.echo("错误: 只能指定一种生成来源", err=True)
@@ -1537,11 +1539,21 @@ def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, playbook_na
                 filter_status=filter_status,
                 line_range=line_range,
                 remark_template=remark_template,
+                db_path=db_path,
             )
         elif csv_path:
             pb = playbook_mod.generate_from_csv(
                 batch_no=batch_no,
                 csv_path=os.path.abspath(csv_path),
+                operator=operator,
+                description=description,
+                output_file=output_file,
+                db_path=db_path,
+            )
+        elif from_recent_ops:
+            pb = playbook_mod.generate_from_recent_ops(
+                db_path=db_path,
+                batch_no=batch_no,
                 operator=operator,
                 description=description,
                 output_file=output_file,
@@ -1553,6 +1565,7 @@ def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, playbook_na
                 operator=operator,
                 description=description,
                 output_file=output_file,
+                fallback_to_recent_ops=True,
             )
         else:
             click.echo("错误: 未指定生成来源", err=True)
@@ -1571,14 +1584,45 @@ def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, playbook_na
     click.echo("=" * 60)
     click.echo(f"剧本已生成: 批次 '{batch_no}'")
     click.echo(f"  版本: {pb['version']}")
+
+    src = pb.get("source", {})
+    src_type = src.get("type", "")
+    src_type_cn = {
+        "command_args": "命令参数",
+        "csv_template": "CSV 模板",
+        "recent_operations": "最近真实操作",
+        "last_playbook_run": "最近剧本运行",
+    }.get(src_type, src_type or "未知")
+    click.echo(f"  来源: {src_type_cn}")
+    if src.get("timestamp"):
+        click.echo(f"  来源时间: {format_time(src['timestamp'])}")
+
     if pb.get("description"):
         click.echo(f"  描述: {pb['description']}")
     if pb.get("operator"):
         click.echo(f"  操作人: {pb['operator']}")
     if pb.get("output_file"):
-        click.echo(f"  输出文件: {pb['output_file']}")
+        click.echo(f"  导出文件名: {pb['output_file']}")
+
+    gc = pb.get("global_context", {})
+    if gc.get("filter_status"):
+        click.echo(f"  固化筛选: {gc['filter_status']}")
+    if gc.get("line_range"):
+        click.echo(f"  固化行号范围: {gc['line_range'][0]}-{gc['line_range'][1]}")
+    if gc.get("target_status"):
+        click.echo(f"  固化目标状态: {gc['target_status']}")
+    if gc.get("remark_template"):
+        click.echo(f"  固化备注模板: {gc['remark_template']}")
+
+    vs = pb.get("version_snapshot", {})
+    if vs:
+        rs = vs.get("review_stats", {})
+        click.echo(f"  版本快照: {rs.get('signed', 0)}已签收/{rs.get('supplement', 0)}待补件/{rs.get('pending', 0)}待处理")
+        if vs.get("manifest_path"):
+            click.echo(f"  固化 manifest: {vs['manifest_path']}")
+
     if pb.get("batch_updated_at"):
-        click.echo(f"  批次快照: {format_time(pb['batch_updated_at'])}")
+        click.echo(f"  批次快照时间: {format_time(pb['batch_updated_at'])}")
     if pb.get("replayed_from_run_id"):
         click.echo(f"  重放来源: 运行 #{pb['replayed_from_run_id']} ({pb.get('replayed_from_status', '')})")
     click.echo(f"  步骤数: {len(pb['steps'])}")
@@ -1603,8 +1647,9 @@ def playbook_generate(ctx, batch_no, steps, csv_path, from_last_run, playbook_na
 
     click.echo("=" * 60)
     click.echo("")
-    click.echo("提示: 使用 'evi playbook check --name <名称>' 检查冲突")
-    click.echo("      使用 'evi playbook run --name <名称>' 执行库中剧本")
+    click.echo("提示: 使用 'evi playbook check --name <名称>' 或 'evi playbook check -p <文件>' 检查冲突")
+    click.echo("      使用 'evi playbook preview -p <剧本文件>' 预演命中条目")
+    click.echo("      使用 'evi playbook execute -p <剧本文件>' 或 'evi playbook run --name <名称>' 执行")
 
 
 @playbook.command("check")
@@ -1662,9 +1707,17 @@ def playbook_check(ctx, playbook_name, playbook_path):
 
     if check_result.get("batch_modified"):
         click.echo(f"  [!] 批次已被修改")
+        if check_result.get("batch_change_details"):
+            for cd in check_result["batch_change_details"]:
+                click.echo(f"      - {cd}")
 
     if check_result.get("readonly_export_dir"):
         click.echo(f"  [!] 导出目录只读")
+
+    if check_result.get("export_path_conflicts"):
+        click.echo(f"  [!] 导出路径冲突")
+        for epc in check_result["export_path_conflicts"]:
+            click.echo(f"      - {epc}")
 
     if check_result.get("check_errors"):
         click.echo("")

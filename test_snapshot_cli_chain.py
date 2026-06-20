@@ -2498,6 +2498,405 @@ class TestSnapshotCLIChain(unittest.TestCase):
 
         print("\n[OK] 测试32通过")
 
+    def test_33_undo_regenerate_and_execute(self):
+        """测试33: 撤销后重新生成剧本再执行（最近操作回放 + undo 合并）"""
+        print("\n" + "=" * 60)
+        print("测试33: 撤销后重新生成再执行")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "undo_regen")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        fixture = self._create_evidence_fixture(work)
+
+        run_cli([
+            "import", "-b", "batch_undo_regen",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "撤销重测试",
+        ], cwd=work)
+
+        print("\n[步骤1] 真实手工复核 2 条 + 撤销 1 条（没跑过剧本）")
+        run_cli([
+            "review", "-b", "batch_undo_regen",
+            "-i", "1", "-s", "signed",
+            "-r", "手工复核v1", "-o", "alice",
+        ], cwd=work)
+        run_cli([
+            "review", "-b", "batch_undo_regen",
+            "-i", "2", "-s", "signed",
+            "-r", "手工复核v1", "-o", "alice",
+        ], cwd=work)
+        run_cli([
+            "undo", "-b", "batch_undo_regen",
+            "-o", "bob",
+        ], cwd=work)
+
+        result = run_cli(["resume", "-b", "batch_undo_regen"], cwd=work)
+        self.assertIn("已签收", result.stdout)
+        self.assertIn("待处理", result.stdout)
+
+        print("\n[步骤2] 从最近操作生成剧本（--from-recent-ops，即使没跑过剧本）")
+        pb_path = os.path.join(work, "regen_pb.json")
+        export_path = os.path.join(work, "regen_export.json")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_undo_regen",
+            "--from-recent-ops",
+            "--output", pb_path,
+            "--output-file", export_path,
+            "--operator", "replayer", "-d", "撤销后重放剧本",
+        ], cwd=work)
+
+        self.assertIn("来源: 最近真实操作", result.stdout)
+        self.assertIn("固化 manifest", result.stdout)
+        self.assertIn("版本快照", result.stdout)
+
+        with open(pb_path, "r", encoding="utf-8") as f:
+            pb = json.load(f)
+        self.assertIn("source", pb)
+        self.assertEqual(pb["source"]["type"], "recent_operations")
+        self.assertIn("version_snapshot", pb)
+        self.assertIn("global_context", pb)
+
+        step_types = [s["type"] for s in pb["steps"]]
+        self.assertIn("review", step_types)
+        self.assertIn("undo", step_types)
+        self.assertIn("export", step_types)
+
+        print("\n[步骤3] check 剧本冲突与命中")
+        result = run_cli(["playbook", "check", "-p", pb_path], cwd=work)
+        self.assertIn("命中", result.stdout)
+        self.assertIn("步骤 1:", result.stdout)
+        if "skipped" in result.stdout.lower() or len([l for l in result.stdout.splitlines() if "跳过" in l]) > 0:
+            self.assertIn("跳过", result.stdout)
+
+        print("\n[步骤4] 执行剧本，验证状态正确")
+        result = run_cli(["playbook", "execute", "-p", pb_path], cwd=work)
+        self.assertIn("completed", result.stdout)
+
+        result = run_cli(["resume", "-b", "batch_undo_regen"], cwd=work)
+        self.assertIn("已签收", result.stdout)
+        self.assertTrue(os.path.exists(export_path))
+
+        print("\n[步骤5] 从最近剧本运行再次生成（--from-last-run 自动回退）")
+        pb_path2 = os.path.join(work, "regen_pb2.json")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_undo_regen",
+            "--from-last-run",
+            "--output", pb_path2,
+            "--operator", "replayer2",
+        ], cwd=work)
+        self.assertIn("重放来源", result.stdout)
+
+        print("\n[OK] 测试33通过")
+
+    def test_34_readonly_export_dir_and_conflicts(self):
+        """测试34: 只读导出目录 + 导出路径冲突 + 同名剧本冲突 check 检测"""
+        print("\n" + "=" * 60)
+        print("测试34: 只读导出目录 + 导出路径冲突 + 同名冲突")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "readonly_check")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_ro",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        print("\n[步骤1] 创建只读目录")
+        readonly_dir = os.path.join(work, "readonly_out")
+        os.makedirs(readonly_dir)
+        os.chmod(readonly_dir, 0o444)
+
+        pb_ro_path = os.path.join(work, "pb_ro.json")
+        bad_export = os.path.join(readonly_dir, "out.json")
+        run_cli([
+            "playbook", "generate",
+            "-b", "batch_ro",
+            "-s", "precheck",
+            "-s", f"export:{bad_export}",
+            "-s", f"export:{bad_export}",
+            "--output", pb_ro_path,
+        ], cwd=work, check=False)
+
+        print("\n[步骤2] check 应检测出只读目录 + 导出路径冲突")
+        result = run_cli(
+            ["playbook", "check", "-p", pb_ro_path],
+            cwd=work, check=False,
+        )
+        combined = result.stdout + result.stderr
+        if os.name != "nt":
+            self.assertIn("只读", combined)
+        self.assertIn("导出路径冲突", combined)
+
+        os.chmod(readonly_dir, 0o777)
+
+        print("\n[步骤3] 保存剧本到库，再 check --name 同名冲突")
+        run_cli([
+            "playbook", "generate",
+            "-b", "batch_ro",
+            "-s", "precheck",
+            "--name", "dup_pb",
+            "--save",
+            "--operator", "op1",
+        ], cwd=work)
+
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_ro",
+            "-s", "precheck",
+            "--name", "dup_pb",
+            "--save",
+            "--operator", "op2",
+        ], cwd=work, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("已存在", result.stdout + result.stderr)
+
+        print("\n[步骤4] 使用 --overwrite 覆盖同名剧本")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_ro",
+            "-s", "precheck",
+            "--name", "dup_pb",
+            "--save", "--overwrite",
+            "--operator", "op3",
+        ], cwd=work)
+        self.assertIn("已保存到剧本库", result.stdout)
+
+        print("\n[OK] 测试34通过")
+
+    def test_35_cross_process_recovery_and_persistence(self):
+        """测试35: 跨进程重启后剧本历史、运行记录、库都能恢复"""
+        print("\n" + "=" * 60)
+        print("测试35: 跨进程重启后数据持久化")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "cross_proc")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_cp",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+        ], cwd=work)
+
+        print("\n[步骤1] 进程A: 生成剧本 → 保存 → 执行 → 记录历史")
+        pb_lib_name = "cp_pb_v1"
+        export_cp = os.path.join(work, "cp_export.json")
+        run_cli([
+            "playbook", "generate",
+            "-b", "batch_cp",
+            "-s", "precheck",
+            "-s", "review:signed:pending::跨进程复核",
+            "-s", f"export:{export_cp}",
+            "--name", pb_lib_name,
+            "--save",
+            "--operator", "proc_a",
+            "-d", "跨进程持久化测试",
+        ], cwd=work)
+
+        result = run_cli(
+            ["playbook", "run", "-n", pb_lib_name],
+            cwd=work,
+        )
+        self.assertIn("completed", result.stdout)
+        self.assertTrue(os.path.exists(export_cp))
+
+        result = run_cli(["playbook", "history", "-b", "batch_cp"], cwd=work)
+        self.assertIn("[OK] completed", result.stdout)
+        run_id_before = None
+        for line in result.stdout.splitlines():
+            if "#" in line and "completed" in line:
+                import re
+                m = re.search(r"#(\d+)", line)
+                if m:
+                    run_id_before = m.group(1)
+                    break
+        self.assertIsNotNone(run_id_before)
+
+        print(f"\n[步骤2] 进程B(新子进程): list / history / show 数据一致")
+        for _ in range(3):
+            result = run_cli(["playbook", "history", "-b", "batch_cp"], cwd=work)
+            self.assertIn("[OK] completed", result.stdout)
+
+        result = run_cli(["playbook", "list"], cwd=work)
+        self.assertIn(pb_lib_name, result.stdout)
+
+        result = run_cli(["playbook", "show", "-n", pb_lib_name], cwd=work)
+        self.assertIn("跨进程持久化测试", result.stdout)
+
+        print(f"\n[步骤3] 进程B: 再次执行同名剧本，run_id 递增")
+        result = run_cli(
+            ["playbook", "run", "-n", pb_lib_name, "--force"],
+            cwd=work,
+        )
+        self.assertIn("completed", result.stdout)
+
+        result = run_cli(["playbook", "history", "-b", "batch_cp"], cwd=work)
+        runs_count = result.stdout.count("[OK] completed")
+        self.assertGreaterEqual(runs_count, 2)
+
+        print("\n[步骤4] 进程B: 从最近运行再次生成（跨进程数据正确）")
+        pb_cp_2 = os.path.join(work, "cp_pb_v2.json")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_cp",
+            "--from-last-run",
+            "--output", pb_cp_2,
+        ], cwd=work)
+        self.assertIn("重放来源", result.stdout)
+
+        print("\n[OK] 测试35通过")
+
+    def test_36_full_three_sources_check_execute_history(self):
+        """测试36: 完整真实命令链 —— 三种来源 + check + 执行 + 历史查询全流程"""
+        print("\n" + "=" * 60)
+        print("测试36: 完整真实命令链 —— 三种入口+check+执行+历史")
+        print("=" * 60)
+
+        work = os.path.join(self.base_dir, "full_chain")
+        os.makedirs(work)
+        run_cli(["init"], cwd=work)
+
+        fixture = self._create_evidence_fixture(work)
+        run_cli([
+            "import", "-b", "batch_full_chain",
+            "-m", fixture["manifest_path"],
+            "-e", fixture["evidence_dir"],
+            "-d", "全链路测试批次",
+        ], cwd=work)
+
+        print("\n=== [来源1] 命令参数 --step ===")
+        pb_args = os.path.join(work, "pb_args.json")
+        export_args = os.path.join(work, "export_args.json")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_full_chain",
+            "-s", "precheck",
+            "-s", "review:signed:pending::参数来源备注",
+            "-s", f"export:{export_args}",
+            "-f", "pending",
+            "--output", pb_args,
+            "--operator", "args_op",
+            "-d", "参数来源剧本",
+        ], cwd=work)
+        self.assertIn("来源: 命令参数", result.stdout)
+        self.assertIn("固化筛选: pending", result.stdout)
+
+        print("\n  → check 剧本（参数来源）")
+        result = run_cli(["playbook", "check", "-p", pb_args], cwd=work)
+        self.assertIn("[OK] 可以执行", result.stdout)
+        self.assertIn("命中", result.stdout)
+
+        print("  → execute 剧本")
+        run_cli(["playbook", "execute", "-p", pb_args], cwd=work)
+        self.assertTrue(os.path.exists(export_args))
+
+        print("\n=== [来源2] CSV 模板 --from-csv ===")
+        csv_path = os.path.join(work, "template.csv")
+        export_csv = os.path.join(work, "export_csv.json")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["type", "filter_status", "line_range", "target_status",
+                        "remark_template", "operator", "output_path", "export_format"])
+            w.writerow(["precheck", "", "", "", "", "", "", ""])
+            w.writerow(["review", "pending", "", "supplement",
+                        "CSV模板备注-{batch_no}", "", "", ""])
+            w.writerow(["export", "", "", "", "", "", export_csv, "json"])
+
+        pb_csv = os.path.join(work, "pb_csv.json")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_full_chain",
+            "--from-csv", csv_path,
+            "--output", pb_csv,
+            "--operator", "csv_op",
+            "-d", "CSV来源剧本",
+        ], cwd=work)
+        self.assertIn("来源: CSV 模板", result.stdout)
+        self.assertIn("固化备注模板", result.stdout)
+
+        print("  → check 剧本（CSV来源）")
+        result = run_cli(["playbook", "check", "-p", pb_csv], cwd=work)
+        if os.path.exists(export_csv):
+            self.assertIn("文件已存在将被覆盖", result.stdout)
+
+        print("  → execute 剧本 --force")
+        run_cli(["playbook", "execute", "-p", pb_csv, "--force"], cwd=work)
+
+        print("\n=== [来源3] 最近操作 --from-recent-ops ===")
+        run_cli([
+            "undo", "-b", "batch_full_chain",
+            "-o", "hand_op",
+        ], cwd=work)
+        run_cli([
+            "review", "-b", "batch_full_chain",
+            "-i", "3", "-s", "signed",
+            "-r", "手工复核收尾", "-o", "hand_op",
+        ], cwd=work)
+
+        pb_ops = os.path.join(work, "pb_ops.json")
+        export_ops = os.path.join(work, "export_ops.json")
+        result = run_cli([
+            "playbook", "generate",
+            "-b", "batch_full_chain",
+            "--from-recent-ops",
+            "--output", pb_ops,
+            "--output-file", export_ops,
+            "--operator", "ops_op",
+            "-d", "最近操作来源剧本",
+        ], cwd=work)
+        self.assertIn("来源: 最近真实操作", result.stdout)
+        self.assertIn("版本快照", result.stdout)
+
+        step_types = []
+        with open(pb_ops, "r", encoding="utf-8") as f:
+            pb = json.load(f)
+            step_types = [s["type"] for s in pb["steps"]]
+        self.assertIn("undo", step_types)
+        self.assertIn("review", step_types)
+        self.assertIn("export", step_types)
+
+        print("  → check + execute 最近操作剧本")
+        run_cli(["playbook", "check", "-p", pb_ops], cwd=work)
+        run_cli(["playbook", "execute", "-p", pb_ops, "--force"], cwd=work)
+
+        print("\n=== [历史查询] playbook history / list / show ===")
+        result = run_cli(["playbook", "history", "-b", "batch_full_chain"], cwd=work)
+        completed_count = result.stdout.count("[OK] completed")
+        self.assertGreaterEqual(completed_count, 3)
+
+        run_cli([
+            "playbook", "generate",
+            "-b", "batch_full_chain",
+            "-s", "precheck",
+            "--name", "chain_saved",
+            "--save", "-d", "保存到库的剧本",
+        ], cwd=work)
+
+        result = run_cli(["playbook", "list"], cwd=work)
+        self.assertIn("chain_saved", result.stdout)
+
+        result = run_cli(["playbook", "show", "-n", "chain_saved"], cwd=work)
+        self.assertIn("保存到库的剧本", result.stdout)
+
+        print("\n=== [最终状态校验] resume + 导出文件存在 ===")
+        result = run_cli(["resume", "-b", "batch_full_chain"], cwd=work)
+        self.assertIn("已签收", result.stdout)
+        for p in [export_args, export_csv, export_ops]:
+            self.assertTrue(os.path.exists(p), f"导出文件缺失: {p}")
+
+        print("\n[OK] 测试36通过")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

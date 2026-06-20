@@ -1,0 +1,4 @@
+type,filter_status,line_range,target_status,remark_template,operator,output_path,export_format
+review,pending,1-2,signed,CSV确认:{item_id},csv-op,,
+export,,,,,,D:\workSpace\AI__SPACE\02-label\zgw-00147\.review_runtime_codex_p09_a01\exports\csv_export.json,json
+export,,,,,,D:\workSpace\AI__SPACE\02-label\zgw-00147\.review_runtime_codex_p09_a01\exports\csv_export.json,json

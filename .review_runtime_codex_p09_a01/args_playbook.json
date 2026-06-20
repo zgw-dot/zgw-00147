@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "batch_no": "batch-r1",
+  "description": "args generated",
+  "operator": "dave",
+  "output_file": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_p09_a01\\exports\\args_export.json",
+  "created_at": 1781915263.7274008,
+  "source": {
+    "type": "command_args",
+    "timestamp": 1781915263.727398
+  },
+  "global_context": {
+    "filter_status": "",
+    "line_range": null,
+    "target_status": "",
+    "remark_template": ""
+  },
+  "version_snapshot": {
+    "batch_updated_at": 1781915241.8422036,
+    "batch_created_at": 1781915209.7574344,
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_p09_a01\\reviewer_manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_p09_a01\\evidence",
+    "manifest_line_range": [
+      2,
+      4
+    ],
+    "review_stats": {
+      "total": 3,
+      "signed": 1,
+      "supplement": 0,
+      "pending": 2
+    },
+    "precheck_stats": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "item_count": 3,
+    "last_operation": {
+      "log_id": 1,
+      "action": "review",
+      "timestamp": 1781915230.1694584
+    }
+  },
+  "steps": [
+    {
+      "type": "review",
+      "order": 1,
+      "target_status": "signed",
+      "filter_status": "pending",
+      "line_range": [
+        1,
+        2
+      ],
+      "remark_template": "参数备注-{item_id}"
+    },
+    {
+      "type": "export",
+      "order": 2,
+      "output_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_p09_a01\\exports\\args_export.json",
+      "export_format": "json"
+    }
+  ],
+  "metadata": {
+    "generated_from": "command_args",
+    "step_specs": [
+      "review:signed:pending:1-2:参数备注-{item_id}",
+      "export:D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_codex_p09_a01\\exports\\args_export.json:json"
+    ]
+  },
+  "batch_updated_at": 1781915241.8422036
+}

@@ -41,6 +41,14 @@ def create_playbook(
     operator: str = "",
     output_file: str = "",
     description: str = "",
+    source_type: str = "",
+    source_timestamp: Optional[float] = None,
+    global_filter_status: str = "",
+    global_line_range: Optional[List[int]] = None,
+    global_target_status: str = "",
+    global_remark_template: str = "",
+    version_snapshot: Optional[Dict] = None,
+    extra_metadata: Optional[Dict] = None,
 ) -> Dict:
     playbook = {
         "version": PLAYBOOK_VERSION,
@@ -49,8 +57,22 @@ def create_playbook(
         "operator": operator,
         "output_file": output_file,
         "created_at": time.time(),
+        "source": {
+            "type": source_type,
+            "timestamp": source_timestamp if source_timestamp else time.time(),
+        },
+        "global_context": {
+            "filter_status": global_filter_status,
+            "line_range": global_line_range,
+            "target_status": global_target_status,
+            "remark_template": global_remark_template,
+        },
+        "version_snapshot": version_snapshot if version_snapshot else {},
         "steps": [],
     }
+
+    if extra_metadata:
+        playbook["metadata"] = extra_metadata
 
     for idx, step in enumerate(steps):
         step_type = step.get("type")
@@ -704,14 +726,17 @@ def generate_from_args(
     filter_status: str = "",
     line_range: Optional[str] = None,
     remark_template: str = "",
+    db_path: Optional[str] = None,
 ) -> Dict:
     """
     从命令行步骤描述字符串生成剧本。
 
     step_specs 为 parse_step_spec 格式的字符串列表。
     全局 filter_status / line_range / remark_template 会合并到各步骤（步骤级优先）。
+    提供 db_path 时会固化版本快照、批次状态等元数据。
     """
     steps = []
+    parsed_line_range: Optional[List[int]] = None
     for spec in step_specs:
         step = parse_step_spec(spec)
         if filter_status and "filter_status" not in step:
@@ -720,11 +745,19 @@ def generate_from_args(
             lr_parts = line_range.split("-", 1)
             try:
                 step["line_range"] = [int(lr_parts[0]), int(lr_parts[1])]
+                if parsed_line_range is None:
+                    parsed_line_range = step["line_range"]
             except (ValueError, IndexError):
                 raise PlaybookFormatError(f"全局行号范围格式错误: '{line_range}'")
         if remark_template and "remark_template" not in step and step["type"] == "review":
             step["remark_template"] = remark_template
         steps.append(step)
+
+    version_snapshot = None
+    if db_path:
+        batch = db.get_batch_by_no(db_path, batch_no)
+        if batch:
+            version_snapshot = _build_version_snapshot(db_path, batch)
 
     return create_playbook(
         batch_no=batch_no,
@@ -732,6 +765,17 @@ def generate_from_args(
         operator=operator,
         output_file=output_file,
         description=description,
+        source_type="command_args",
+        source_timestamp=time.time(),
+        global_filter_status=filter_status,
+        global_line_range=parsed_line_range,
+        global_target_status="",
+        global_remark_template=remark_template,
+        version_snapshot=version_snapshot,
+        extra_metadata={
+            "generated_from": "command_args",
+            "step_specs": step_specs,
+        },
     )
 
 
@@ -741,6 +785,7 @@ def generate_from_csv(
     operator: str = "",
     description: str = "",
     output_file: str = "",
+    db_path: Optional[str] = None,
 ) -> Dict:
     """
     从 CSV 模板文件生成剧本。
@@ -811,13 +856,265 @@ def generate_from_csv(
     if not steps:
         raise PlaybookFormatError("CSV 模板中没有有效的步骤定义")
 
+    version_snapshot = None
+    csv_mtime = None
+    csv_abs_path = os.path.abspath(csv_path)
+    try:
+        csv_mtime = os.path.getmtime(csv_abs_path)
+    except OSError:
+        pass
+
+    global_fs = ""
+    global_lr: Optional[List[int]] = None
+    global_target = ""
+    global_remark = ""
+    for s in steps:
+        if s.get("filter_status") and not global_fs:
+            global_fs = s["filter_status"]
+        if s.get("line_range") and not global_lr:
+            global_lr = s["line_range"]
+        if s.get("type") == "review" and s.get("target_status") and not global_target:
+            global_target = s["target_status"]
+        if s.get("remark_template") and not global_remark:
+            global_remark = s["remark_template"]
+
+    if db_path:
+        batch = db.get_batch_by_no(db_path, batch_no)
+        if batch:
+            version_snapshot = _build_version_snapshot(db_path, batch)
+
     return create_playbook(
         batch_no=batch_no,
         steps=steps,
         operator=operator,
         output_file=output_file,
         description=description,
+        source_type="csv_template",
+        source_timestamp=csv_mtime or time.time(),
+        global_filter_status=global_fs,
+        global_line_range=global_lr,
+        global_target_status=global_target,
+        global_remark_template=global_remark,
+        version_snapshot=version_snapshot,
+        extra_metadata={
+            "generated_from": "csv_template",
+            "csv_path": csv_abs_path,
+            "csv_mtime": csv_mtime,
+        },
     )
+
+
+def _build_version_snapshot(db_path: str, batch: Dict) -> Dict:
+    """
+    构建批次版本快照，包含当前批次状态、统计、manifest 信息等，
+    用于固化剧本生成时刻的批次状态，支持变更检测。
+    """
+    batch_id = batch["id"]
+    total_rv, signed_rv, supp_rv, pend_rv = db.count_reviewed(db_path, batch_id)
+    total_pc, passed_pc, failed_pc, unchecked_pc = db.count_precheck(db_path, batch_id)
+
+    items = db.get_evidence_items(db_path, batch_id)
+    line_numbers = sorted([i["manifest_line_no"] for i in items])
+    min_line = line_numbers[0] if line_numbers else None
+    max_line = line_numbers[-1] if line_numbers else None
+
+    last_log = db.get_last_review_log(db_path, batch_id)
+
+    return {
+        "batch_updated_at": batch.get("updated_at"),
+        "batch_created_at": batch.get("created_at"),
+        "manifest_path": batch.get("manifest_path"),
+        "evidence_dir": batch.get("evidence_dir"),
+        "manifest_line_range": [min_line, max_line] if min_line and max_line else None,
+        "review_stats": {
+            "total": total_rv,
+            "signed": signed_rv,
+            "supplement": supp_rv,
+            "pending": pend_rv,
+        },
+        "precheck_stats": {
+            "total": total_pc,
+            "passed": passed_pc,
+            "failed": failed_pc,
+            "unchecked": unchecked_pc,
+        },
+        "item_count": len(items),
+        "last_operation": {
+            "log_id": last_log.get("id") if last_log else None,
+            "action": last_log.get("action") if last_log else None,
+            "timestamp": last_log.get("created_at") if last_log else None,
+        },
+    }
+
+
+def generate_from_recent_ops(
+    db_path: str,
+    batch_no: str,
+    operator: str = "",
+    description: str = "",
+    output_file: str = "",
+    include_export: bool = True,
+) -> Dict:
+    """
+    从最近一次真实操作记录（review_logs）生成剧本。
+
+    即使这个批次只做过 review、undo，还没跑过剧本，也能生成并接着执行。
+
+    工作原理：
+    1. 扫描 review_logs 中所有真实复核/撤销操作
+    2. 连续同状态的 review 操作合并为一个 review 步骤（按目标状态分组合并）
+    3. undo 操作生成一个 undo 步骤（保留操作人）
+    4. 自动固化：筛选条件、manifest 行号范围、目标状态、备注模板、操作人、
+       导出文件名、来源时间、版本快照
+    5. 可选自动追加 export 步骤
+
+    返回可保存的 JSON 剧本字典。
+    """
+    batch = db.get_batch_by_no(db_path, batch_no)
+    if not batch:
+        raise PlaybookError(f"批次 '{batch_no}' 不存在")
+
+    history = db.get_review_history(db_path, batch["id"], limit=10000)
+    if not history:
+        raise PlaybookError(
+            f"批次 '{batch_no}' 没有任何复核/撤销操作记录，无法生成回放剧本"
+        )
+
+    history_asc = list(reversed(history))
+
+    steps: List[Dict] = []
+    current_group = None
+
+    for log in history_asc:
+        action = log["action"]
+
+        if action == "undo":
+            if current_group:
+                steps.append(current_group)
+                current_group = None
+            steps.append({
+                "type": "undo",
+                "operator": log.get("operator", ""),
+            })
+
+        elif action == "review":
+            target_status = log["new_status"]
+            if target_status not in ("signed", "supplement"):
+                continue
+
+            item = db.get_evidence_item_by_id(db_path, log["item_id"])
+            log_line_no = item["manifest_line_no"] if item else None
+            log_remark = log.get("new_remark", "") or ""
+            log_operator = log.get("operator", "")
+
+            if (current_group
+                    and current_group["type"] == "review"
+                    and current_group.get("target_status") == target_status
+                    and current_group.get("_remark") == log_remark
+                    and current_group.get("_operator") == log_operator):
+                if log_line_no:
+                    lr = current_group.get("_line_range", [log_line_no, log_line_no])
+                    lr[0] = min(lr[0], log_line_no)
+                    lr[1] = max(lr[1], log_line_no)
+                    current_group["_line_range"] = lr
+                current_group["_count"] = current_group.get("_count", 0) + 1
+            else:
+                if current_group:
+                    steps.append(current_group)
+                current_group = {
+                    "type": "review",
+                    "target_status": target_status,
+                    "filter_status": "pending",
+                    "_remark": log_remark,
+                    "_operator": log_operator,
+                    "_line_range": [log_line_no, log_line_no] if log_line_no else None,
+                    "_count": 1,
+                }
+                if log_remark:
+                    current_group["remark_template"] = log_remark
+                if log_operator:
+                    current_group["operator"] = log_operator
+
+    if current_group:
+        steps.append(current_group)
+
+    for s in steps:
+        if s.get("_line_range"):
+            s["line_range"] = s["_line_range"]
+        for k in list(s.keys()):
+            if k.startswith("_"):
+                del s[k]
+
+    if include_export and output_file:
+        steps.append({
+            "type": "export",
+            "output_path": output_file,
+            "export_format": "auto",
+        })
+
+    if not steps:
+        raise PlaybookError(
+            f"批次 '{batch_no}' 没有可回放的有效操作（仅含非 review/undo 动作）"
+        )
+
+    version_snapshot = _build_version_snapshot(db_path, batch)
+
+    all_review_ops = [h for h in history_asc if h["action"] == "review"]
+    op_count = len(history_asc)
+    undo_count = sum(1 for h in history_asc if h["action"] == "undo")
+    review_count = sum(1 for h in history_asc if h["action"] == "review")
+
+    source_ts = history_asc[-1]["created_at"] if history_asc else time.time()
+
+    first_review_remark = ""
+    if all_review_ops:
+        for r in all_review_ops:
+            if r.get("new_remark"):
+                first_review_remark = r["new_remark"]
+                break
+
+    first_review_operator = ""
+    if all_review_ops:
+        for r in all_review_ops:
+            if r.get("operator"):
+                first_review_operator = r["operator"]
+                break
+
+    line_nums = sorted(set(
+        h.get("manifest_line_no")
+        for h in history_asc
+        if h.get("manifest_line_no")
+    ))
+    global_line_range = [line_nums[0], line_nums[-1]] if line_nums else None
+
+    all_targets = sorted(set(
+        h["new_status"] for h in history_asc
+        if h["action"] == "review" and h["new_status"] in ("signed", "supplement")
+    ))
+    global_target = all_targets[0] if len(all_targets) == 1 else ""
+
+    pb = create_playbook(
+        batch_no=batch_no,
+        steps=steps,
+        operator=operator or first_review_operator,
+        output_file=output_file,
+        description=description or f"最近操作回放（共 {op_count} 条操作：复核 {review_count}，撤销 {undo_count}）",
+        source_type="recent_operations",
+        source_timestamp=source_ts,
+        global_filter_status="pending",
+        global_line_range=global_line_range,
+        global_target_status=global_target,
+        global_remark_template=first_review_remark,
+        version_snapshot=version_snapshot,
+        extra_metadata={
+            "operation_count": op_count,
+            "review_count": review_count,
+            "undo_count": undo_count,
+            "generated_from": "review_logs",
+        },
+    )
+
+    return pb
 
 
 def generate_from_last_run(
@@ -826,21 +1123,27 @@ def generate_from_last_run(
     operator: str = "",
     description: str = "",
     output_file: str = "",
+    fallback_to_recent_ops: bool = True,
 ) -> Dict:
     """
-    从最近一次批次操作记录生成剧本。
-
-    扫描 review_logs 中最近的复核/撤销操作，按操作类型逆向构建步骤：
-    - 连续的 review 操作合并为一个 review 步骤
-    - undo 操作生成一个 undo 步骤
-    如果最后一条记录是 undo，会在剧本中重建该 undo 步骤，方便"撤销后重放"。
+    从最近一次剧本运行记录生成剧本；如果没有剧本运行记录，
+    默认回退到从真实 review_logs 操作记录生成。
     """
     batch = db.get_batch_by_no(db_path, batch_no)
     if not batch:
         raise PlaybookError(f"批次 '{batch_no}' 不存在")
 
     last_run = db.get_last_playbook_run(db_path, batch_no)
+
     if not last_run:
+        if fallback_to_recent_ops:
+            return generate_from_recent_ops(
+                db_path=db_path,
+                batch_no=batch_no,
+                operator=operator,
+                description=description or "(无剧本运行记录，已回退为最近操作回放)",
+                output_file=output_file,
+            )
         raise PlaybookError(f"批次 '{batch_no}' 没有剧本执行记录，无法从最近操作生成")
 
     playbook_data = last_run.get("playbook_data")
@@ -848,12 +1151,30 @@ def generate_from_last_run(
         try:
             playbook_data = json.loads(playbook_data)
         except (json.JSONDecodeError, TypeError):
+            if fallback_to_recent_ops:
+                return generate_from_recent_ops(
+                    db_path=db_path,
+                    batch_no=batch_no,
+                    operator=operator,
+                    description=description or "(剧本运行数据损坏，已回退为最近操作回放)",
+                    output_file=output_file,
+                )
             raise PlaybookError(f"剧本运行 #{last_run['id']} 的 playbook_data 无法解析")
 
     if not playbook_data or "steps" not in playbook_data:
+        if fallback_to_recent_ops:
+            return generate_from_recent_ops(
+                db_path=db_path,
+                batch_no=batch_no,
+                operator=operator,
+                description=description or "(剧本运行数据无步骤，已回退为最近操作回放)",
+                output_file=output_file,
+            )
         raise PlaybookError(f"剧本运行 #{last_run['id']} 没有可用的步骤数据")
 
     steps = playbook_data["steps"]
+
+    version_snapshot = _build_version_snapshot(db_path, batch)
 
     desc = description or f"从运行 #{last_run['id']} 重放的剧本"
 
@@ -863,6 +1184,14 @@ def generate_from_last_run(
         operator=operator or playbook_data.get("operator", ""),
         output_file=output_file or playbook_data.get("output_file", ""),
         description=desc,
+        source_type="last_playbook_run",
+        source_timestamp=last_run.get("started_at") or time.time(),
+        version_snapshot=version_snapshot,
+        extra_metadata={
+            "replayed_from_run_id": last_run.get("id"),
+            "replayed_from_status": last_run.get("status"),
+            "generated_from": "playbook_runs",
+        },
     )
 
     if last_run.get("status"):
@@ -886,9 +1215,13 @@ def check_playbook(
     """
     剧本检查：比 preview 更全面的冲突检测，正式执行前调用。
 
-    额外检查:
+    检查维度:
+    - 命中条目数量与明细
+    - 跳过步骤和跳过原因
+    - 覆盖内容（export 文件覆盖）
+    - 批次变更（基于版本快照精确检测）
     - 同名剧本在库中已存在
-    - 批次在剧本生成后被修改
+    - 导出路径冲突（多步骤导出同一路径）
     - 导出目录只读
     - 版本冲突
     - 最近一次运行结果
@@ -899,7 +1232,9 @@ def check_playbook(
     result["check_errors"] = []
     result["same_name_conflict"] = False
     result["batch_modified"] = False
+    result["batch_change_details"] = []
     result["readonly_export_dir"] = False
+    result["export_path_conflicts"] = []
     result["version_ok"] = True
 
     pb_version = playbook.get("version", "")
@@ -930,6 +1265,17 @@ def check_playbook(
                 f"批次 '{batch_no}' 在剧本生成后被修改过，执行时需要 --force"
             )
 
+        vs_old = playbook.get("version_snapshot")
+        if vs_old:
+            vs_new = _build_version_snapshot(db_path, batch)
+            changes = _compare_version_snapshots(vs_old, vs_new)
+            if changes:
+                result["batch_modified"] = True
+                result["batch_change_details"] = changes
+                for ch in changes:
+                    result["check_warnings"].append(f"批次变更: {ch}")
+
+    export_paths = {}
     for step in playbook.get("steps", []):
         if step.get("type") == "export":
             output_path = step.get("output_path", "")
@@ -947,14 +1293,77 @@ def check_playbook(
                         f"导出目录尚不存在: {parent}，执行时会自动创建"
                     )
 
+                if os.path.exists(abs_path):
+                    for sp in result.get("steps", []):
+                        if sp.get("order") == step.get("order"):
+                            sp["will_overwrite"].append(f"文件已存在将被覆盖: {output_path}")
+
+                if abs_path in export_paths:
+                    conflict_detail = f"步骤 {export_paths[abs_path]} 和 {step.get('order')} 导出到相同路径: {output_path}"
+                    result["export_path_conflicts"].append(conflict_detail)
+                    result["check_warnings"].append(conflict_detail)
+                else:
+                    export_paths[abs_path] = step.get("order")
+
     if name and db.playbook_name_exists(db_path, name):
         existing = db.get_playbook_from_library(db_path, name)
         if existing and existing.get("last_run_status"):
             result["check_warnings"].append(
                 f"同名剧本上次运行状态: {existing['last_run_status']}"
             )
+            if existing.get("last_run_at"):
+                result["check_warnings"].append(
+                    f"上次运行时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(existing['last_run_at']))}"
+                )
+
+    if result["export_path_conflicts"]:
+        result["global_conflicts"] = result.get("global_conflicts", []) + result["export_path_conflicts"]
 
     return result
+
+
+def _compare_version_snapshots(old_vs: Dict, new_vs: Dict) -> List[str]:
+    """比较两个版本快照，返回变更描述列表"""
+    changes = []
+    try:
+        old_stats = old_vs.get("review_stats", {})
+        new_stats = new_vs.get("review_stats", {})
+        for key in ("signed", "supplement", "pending", "failed_precheck"):
+            ov = old_stats.get(key, 0)
+            nv = new_stats.get(key, 0)
+            if ov != nv:
+                label = {"signed": "已签收", "supplement": "待补件", "pending": "待处理",
+                         "failed_precheck": "预检失败"}.get(key, key)
+                changes.append(f"{label}数量变化: {ov} → {nv}")
+
+        old_last_op = old_vs.get("last_operation")
+        new_last_op = new_vs.get("last_operation")
+        if old_last_op != new_last_op:
+            if new_last_op:
+                changes.append(
+                    f"存在新操作: {new_last_op.get('action', '')} "
+                    f"by {new_last_op.get('operator', '')} "
+                    f"at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(new_last_op['created_at']))}"
+                )
+            else:
+                changes.append("最后操作记录变化")
+
+        old_mf = old_vs.get("manifest_path")
+        new_mf = new_vs.get("manifest_path")
+        if old_mf != new_mf:
+            changes.append(f"Manifest 路径变化: {old_mf or '(空)'} → {new_mf or '(空)'}")
+
+        old_lr = old_vs.get("manifest_line_range")
+        new_lr = new_vs.get("manifest_line_range")
+        if old_lr != new_lr:
+            def _fmt_lr(lr):
+                if lr and len(lr) == 2:
+                    return f"{lr[0]}-{lr[1]}"
+                return "(空)"
+            changes.append(f"Manifest 行号范围变化: {_fmt_lr(old_lr)} → {_fmt_lr(new_lr)}")
+    except Exception:
+        pass
+    return changes
 
 
 def save_to_library(
