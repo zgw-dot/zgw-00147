@@ -1,0 +1,111 @@
+{
+  "version": "1.0",
+  "batch": {
+    "batch_no": "reviewer-batch",
+    "description": "reviewer generated batch",
+    "manifest_path": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_codex_a01_manual_src\\reviewer_manifest.csv",
+    "evidence_dir": "D:\\workSpace\\AI__SPACE\\02-label\\zgw-00147\\.review_runtime_reviewer_codex_a01_manual_src\\evidence",
+    "created_at": 1781919517.028218,
+    "updated_at": 1781919517.8617158
+  },
+  "statistics": {
+    "precheck": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review": {
+      "total": 3,
+      "signed": 1,
+      "supplement": 1,
+      "pending": 1
+    }
+  },
+  "items": [
+    {
+      "id": 1,
+      "file_path": "docs/alpha.txt",
+      "manifest_line_no": 2,
+      "expected_size": 34,
+      "actual_size": 34,
+      "expected_sha256": "fe78f03d54c9277523c7282854d0212ee232874b2bc02b430ea4731911ac768f",
+      "actual_sha256": "fe78f03d54c9277523c7282854d0212ee232874b2bc02b430ea4731911ac768f",
+      "precheck_status": "passed",
+      "review_status": "signed",
+      "review_remark": "人工链路签收",
+      "reviewed_at": 1781919517.590678
+    },
+    {
+      "id": 2,
+      "file_path": "docs/beta.txt",
+      "manifest_line_no": 3,
+      "expected_size": 44,
+      "actual_size": 44,
+      "expected_sha256": "38aed133a2de720132b197d92d3687c3b38244d4c7434f4f377fa527fdabcbd5",
+      "actual_sha256": "38aed133a2de720132b197d92d3687c3b38244d4c7434f4f377fa527fdabcbd5",
+      "precheck_status": "passed",
+      "review_status": "supplement",
+      "review_remark": "人工链路补件",
+      "reviewed_at": 1781919517.8617158
+    },
+    {
+      "id": 3,
+      "file_path": "images/gamma.bin",
+      "manifest_line_no": 4,
+      "expected_size": 50,
+      "actual_size": 50,
+      "expected_sha256": "e617f29df8bb83984814f676dd934f1c0e460dec6d121efa44d0f030ecfd9196",
+      "actual_sha256": "e617f29df8bb83984814f676dd934f1c0e460dec6d121efa44d0f030ecfd9196",
+      "precheck_status": "passed",
+      "review_status": "pending",
+      "review_remark": null,
+      "reviewed_at": null
+    }
+  ],
+  "recovery_summary": {
+    "batch_no": "reviewer-batch",
+    "has_restore": false,
+    "source_snapshot": null,
+    "overwrite_diff": null,
+    "last_review_log": {
+      "id": 2,
+      "action": "review",
+      "item_id": 2,
+      "prev_status": "pending",
+      "new_status": "supplement",
+      "prev_remark": null,
+      "new_remark": "人工链路补件",
+      "operator": "reviewer",
+      "created_at": 1781919517.8617158,
+      "file_path": "docs/beta.txt",
+      "manifest_line_no": 3
+    },
+    "post_restore_ops": {
+      "count": 0,
+      "review_count": 0,
+      "undo_count": 0
+    },
+    "restore_event": null,
+    "precheck_stats": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0,
+      "unchecked": 0
+    },
+    "review_stats": {
+      "total": 3,
+      "signed": 1,
+      "supplement": 1,
+      "pending": 1
+    },
+    "item_count": 3,
+    "reconciled": true,
+    "reconciliation_details": {
+      "item_count_consistent": true,
+      "review_stats_consistent": true,
+      "post_restore_count_consistent": true
+    },
+    "warnings": []
+  }
+}

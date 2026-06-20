@@ -12,6 +12,7 @@ from . import precheck as precheck_mod
 from . import report as report_mod
 from . import snapshot as snapshot_mod
 from . import playbook as playbook_mod
+from . import handoff as handoff_mod
 
 
 STATUS_LABELS = {
@@ -1970,6 +1971,433 @@ def playbook_delete(ctx, playbook_name):
     else:
         click.echo(f"错误: 剧本 '{playbook_name}' 不存在", err=True)
         sys.exit(1)
+
+
+@main.group()
+@click.pass_context
+def handoff(ctx):
+    """批次交接包：打包导出、查看内容、导入恢复"""
+    pass
+
+
+@handoff.command("create")
+@click.option("--batch", "-b", "batch_no", required=True, help="批次编号")
+@click.option("--output", "-o", "output_path", default=None,
+              help="输出包路径（默认保存到 .handoffs 目录）")
+@click.option("--name", "-n", "handoff_name", default=None,
+              help="包名称（保存到 .handoffs 目录时使用）")
+@click.option("--operator", "-u", "op", default=None, help="操作人")
+@click.pass_context
+def handoff_create(ctx, batch_no, output_path, handoff_name, op):
+    """创建批次交接包（含 manifest、预检/复核结果、操作日志、剧本记录、导出报告）"""
+    db_path = ensure_db(ctx)
+    work_dir = ctx.obj["work_dir"]
+
+    if output_path is None:
+        import time as _time
+        if handoff_name is None:
+            timestamp = datetime.datetime.fromtimestamp(_time.time()).strftime("%Y%m%d_%H%M%S")
+            handoff_name = f"{batch_no}_{timestamp}"
+        output_path = handoff_mod.get_handoff_path(work_dir, handoff_name)
+
+    output_path = os.path.abspath(output_path)
+
+    try:
+        result = handoff_mod.create_handoff(
+            db_path=db_path,
+            work_dir=work_dir,
+            batch_no=batch_no,
+            output_path=output_path,
+            operator=op,
+        )
+    except handoff_mod.HandoffNotFoundError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffMissingFilesError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffPermissionError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    pm = result["package_manifest"]
+    click.echo("=" * 60)
+    click.echo("交接包已创建")
+    click.echo("=" * 60)
+    click.echo(f"  路径: {result['output_path']}")
+    click.echo(f"  版本: {pm.get('version', '?')}")
+    click.echo(f"  批次: {pm['batch']['batch_no']}")
+    if pm["batch"].get("description"):
+        click.echo(f"  描述: {pm['batch']['description']}")
+    click.echo(f"  证据项: {pm['batch'].get('item_count', '?')} 项")
+    click.echo(f"  包含文件: {', '.join(pm.get('files', []))}")
+    if pm.get("source", {}).get("operator"):
+        click.echo(f"  操作人: {pm['source']['operator']}")
+    click.echo(f"  创建时间: {format_time(pm.get('created_at', 0))}")
+    click.echo("=" * 60)
+
+
+@handoff.command("show")
+@click.option("--package", "-p", "package_path", required=True,
+              type=click.Path(dir_okay=False), help="交接包文件路径或名称")
+@click.pass_context
+def handoff_show(ctx, package_path):
+    """查看交接包内容（只读，不解包到磁盘）"""
+    work_dir = ctx.obj["work_dir"]
+
+    if not os.path.isabs(package_path) and not os.path.exists(package_path):
+        candidate = handoff_mod.get_handoff_path(work_dir, package_path)
+        if os.path.exists(candidate):
+            package_path = candidate
+
+    package_path = os.path.abspath(package_path)
+
+    try:
+        info = handoff_mod.inspect_handoff(package_path)
+    except handoff_mod.HandoffNotFoundError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffFormatError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffVersionError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffChecksumError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    pm = info["package_manifest"]
+    snapshot = info["snapshot"]
+    items = snapshot.get("items", [])
+    logs = snapshot.get("review_logs", [])
+
+    click.echo("=" * 60)
+    click.echo(f"交接包内容: {os.path.basename(package_path)}")
+    click.echo("=" * 60)
+    click.echo(f"  路径: {package_path}")
+    click.echo(f"  版本: {pm.get('version', '?')}")
+    click.echo(f"  打包时间: {format_time(pm.get('created_at', 0))}")
+    src = pm.get("source", {})
+    if src.get("work_dir"):
+        click.echo(f"  来源 work-dir: {src['work_dir']}")
+    if src.get("operator"):
+        click.echo(f"  打包人: {src['operator']}")
+    click.echo("")
+
+    click.echo(f"批次信息:")
+    click.echo(f"  批次号: {pm['batch']['batch_no']}")
+    if pm["batch"].get("description"):
+        click.echo(f"  描述: {pm['batch']['description']}")
+    click.echo(f"  原 manifest: {pm['batch']['manifest_path']}")
+    click.echo(f"  原证据目录: {pm['batch']['evidence_dir']}")
+    click.echo(f"  证据项数: {len(items)}")
+    click.echo(f"  复核日志: {len(logs)} 条")
+    click.echo("")
+
+    total = len(items)
+    passed = sum(1 for i in items if i.get("precheck_status") == "passed")
+    failed = sum(1 for i in items if i.get("precheck_status") == "failed")
+    unchecked = total - passed - failed
+    signed = sum(1 for i in items if i.get("review_status") == "signed")
+    supp = sum(1 for i in items if i.get("review_status") == "supplement")
+    pend = total - signed - supp
+    click.echo("预检统计:")
+    click.echo(f"  总计: {total}  通过: {passed}  失败: {failed}  未检查: {unchecked}")
+    click.echo("复核统计:")
+    click.echo(f"  总计: {total}  已签收: {signed}  待补件: {supp}  待处理: {pend}")
+    click.echo("")
+
+    recent = info.get("recent_ops", [])
+    click.echo(f"最近操作日志（包内保存 {len(recent)} 条）:")
+    for log in recent[:5]:
+        action = "撤销" if log.get("action") == "undo" else "复核"
+        click.echo(f"  [{format_time(log.get('created_at', 0))}] {action} "
+                   f"#{log.get('item_id', '?')} {log.get('file_path', '')}")
+    if len(recent) > 5:
+        click.echo(f"  ... 还有 {len(recent) - 5} 条")
+    click.echo("")
+
+    lp = info.get("last_playbook")
+    if lp:
+        lr = lp.get("last_run")
+        lib = lp.get("playbook_library", [])
+        if lr:
+            click.echo(f"最近一次剧本运行: #{lr.get('id', '?')} 状态: {lr.get('status', '?')}")
+            click.echo(f"  开始: {format_time(lr.get('started_at', 0))}")
+            if lr.get("finished_at"):
+                click.echo(f"  结束: {format_time(lr.get('finished_at', 0))}")
+            if lr.get("operator"):
+                click.echo(f"  操作人: {lr['operator']}")
+            if lr.get("steps"):
+                click.echo(f"  步骤数: {len(lr['steps'])}")
+        if lib:
+            click.echo(f"剧本库: {len(lib)} 个")
+            for pb in lib[:3]:
+                click.echo(f"  - {pb.get('name', '?')}")
+            if len(lib) > 3:
+                click.echo(f"  ... 还有 {len(lib) - 3} 个")
+        click.echo("")
+
+    er = info.get("export_report", {})
+    if er:
+        click.echo("导出报告:")
+        click.echo(f"  生成时间: {format_time(er.get('generated_at', 0))}")
+    click.echo("=" * 60)
+
+
+@handoff.command("import")
+@click.option("--package", "-p", "package_path", required=True,
+              type=click.Path(dir_okay=False), help="交接包文件路径或名称")
+@click.option("--force", "-f", is_flag=True, help="强制覆盖已存在的同名批次")
+@click.option("--evidence-dir", "-e", "evidence_dir", default=None,
+              type=click.Path(file_okay=False), help="重映射证据目录路径")
+@click.option("--work-dir", "-w", "target_work_dir", default=None,
+              type=click.Path(file_okay=False, dir_okay=True),
+              help="目标工作目录（默认使用当前工作目录）")
+@click.option("--dry-run", is_flag=True,
+              help="只读核查（预演），不修改数据库和文件系统")
+@click.option("--operator", "-u", "op", default=None, help="操作人")
+@click.pass_context
+def handoff_import(ctx, package_path, force, evidence_dir, target_work_dir, dry_run, op):
+    """导入交接包：先只读核查，确认无误再正式恢复"""
+    work_dir = ctx.obj["work_dir"]
+
+    if not os.path.isabs(package_path) and not os.path.exists(package_path):
+        candidate = handoff_mod.get_handoff_path(work_dir, package_path)
+        if os.path.exists(candidate):
+            package_path = candidate
+
+    package_path = os.path.abspath(package_path)
+
+    if target_work_dir:
+        target_work_dir = os.path.abspath(target_work_dir)
+        target_db_path = db.get_db_path(target_work_dir)
+        if not os.path.exists(target_db_path):
+            db.init_db(target_db_path)
+    else:
+        target_db_path = ensure_db(ctx)
+        target_work_dir = work_dir
+
+    if evidence_dir:
+        evidence_dir = os.path.abspath(evidence_dir)
+
+    try:
+        preview = handoff_mod.preview_import_handoff(
+            db_path=target_db_path,
+            work_dir=target_work_dir,
+            package_path=package_path,
+            force=force,
+            evidence_dir=evidence_dir,
+        )
+    except handoff_mod.HandoffNotFoundError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffFormatError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffVersionError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffChecksumError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    click.echo("=" * 60)
+    if dry_run:
+        click.echo(f"交接包导入核查（只读预演）: {os.path.basename(package_path)}")
+    else:
+        click.echo(f"交接包导入核查: {os.path.basename(package_path)}")
+    click.echo("=" * 60)
+
+    pm = preview["package_manifest"]
+    click.echo(f"包版本: {pm.get('version', '?')}")
+    click.echo(f"批次: {preview['package_manifest']['batch']['batch_no']}")
+    click.echo(f"目标 work-dir: {target_work_dir}")
+    click.echo("")
+
+    if not preview["work_dir_writable"]:
+        click.echo(f"[X] 目标目录不可写: {preview.get('work_dir_error', '')}")
+    else:
+        click.echo("[OK] 目标目录可写")
+
+    if preview["conflicts"]:
+        for c in preview["conflicts"]:
+            if "已存在，使用 --force" in c:
+                click.echo(f"[X] {c}")
+            elif "已存在（将被强制覆盖）" in c:
+                click.echo(f"[!] {c}")
+            else:
+                click.echo(f"[!] {c}")
+    else:
+        click.echo("[OK] 无批次/剧本冲突")
+
+    if preview["evidence_remapped"]:
+        click.echo(f"[!] 证据目录将重映射到: {preview['evidence_dir']}")
+    click.echo("")
+
+    click.echo("批次统计:")
+    click.echo(f"  证据项: {preview['item_count']} 项")
+    pc = preview["precheck_stats"]
+    rv = preview["review_stats"]
+    click.echo(f"  预检: 通过 {pc['passed']} / 失败 {pc['failed']} / 未检查 {pc['unchecked']}")
+    click.echo(f"  复核: 已签收 {rv['signed']} / 待补件 {rv['supplement']} / 待处理 {rv['pending']}")
+    click.echo("")
+
+    if preview.get("diff"):
+        diff = preview["diff"]
+        click.echo("-" * 60)
+        click.echo("强制覆盖差异:")
+        old_rv = diff["review_stats"]["old"]
+        new_rv = diff["review_stats"]["new"]
+        click.echo(f"  复核: 已签收 {old_rv['signed']}→{new_rv['signed']}  "
+                   f"待补件 {old_rv['supplement']}→{new_rv['supplement']}")
+        only_old = diff["items"].get("only_in_old", [])
+        only_new = diff["items"].get("only_in_new", [])
+        if only_old:
+            click.echo(f"  仅旧批次: {len(only_old)} 项")
+        if only_new:
+            click.echo(f"  仅新批次: {len(only_new)} 项")
+        click.echo("-" * 60)
+        click.echo("")
+
+    if preview["can_import"]:
+        click.echo("[OK] 核查通过，可以导入")
+    else:
+        click.echo("[X] 核查未通过，无法导入")
+    click.echo("=" * 60)
+
+    if not preview["can_import"]:
+        try:
+            db.insert_handoff_import(
+                db_path=target_db_path,
+                package_path=preview["package_path"],
+                package_version=preview["package_manifest"].get("version", handoff_mod.HANDOFF_VERSION),
+                batch_no=preview["package_manifest"]["batch"]["batch_no"],
+                source_summary=preview["package_manifest"].get("source", {}),
+                import_log=preview.get("import_log", []),
+                restore_result={"error": "预演检查失败", "conflicts": preview["conflicts"]},
+                status="failed",
+                operator=op,
+                was_force=force,
+                evidence_dir_remapped=evidence_dir if preview.get("evidence_remapped") else None,
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+
+    if dry_run:
+        return
+
+    try:
+        result = handoff_mod.import_handoff(
+            db_path=target_db_path,
+            work_dir=target_work_dir,
+            package_path=package_path,
+            force=force,
+            evidence_dir=evidence_dir,
+            operator=op,
+        )
+    except handoff_mod.HandoffConflictError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+    except handoff_mod.HandoffError as e:
+        click.echo(f"错误: {e}", err=True)
+        sys.exit(1)
+
+    click.echo("")
+    click.echo("=" * 60)
+    click.echo("导入完成")
+    click.echo("=" * 60)
+    click.echo(f"  批次: {result['batch_no']}")
+    click.echo(f"  证据项: {result['item_count']} 项")
+    click.echo(f"  manifest: {result['manifest_path']}")
+    click.echo(f"  证据目录: {result['evidence_dir']}")
+    if result.get("evidence_remapped"):
+        click.echo(f"  证据目录已重映射")
+    if result.get("imported_playbooks"):
+        click.echo(f"  已导入剧本: {', '.join(result['imported_playbooks'])}")
+    if result.get("skipped_playbooks"):
+        click.echo(f"  跳过剧本: {', '.join(result['skipped_playbooks'])}")
+    if op:
+        click.echo(f"  操作人: {op}")
+    click.echo("")
+    click.echo("提示: 使用 'evi resume -b <批次号>' 查看恢复后状态")
+    click.echo("      使用 'evi trace -b <批次号>' 查看完整恢复链路")
+    click.echo("      使用 'evi list' 查看所有批次")
+    click.echo("=" * 60)
+
+
+@handoff.command("list")
+@click.pass_context
+def handoff_list(ctx):
+    """列出工作目录中的交接包"""
+    work_dir = ctx.obj["work_dir"]
+    items = handoff_mod.list_handoffs(work_dir)
+    if not items:
+        click.echo("暂无交接包")
+        return
+    click.echo(f"共 {len(items)} 个交接包:")
+    click.echo("")
+    for it in items:
+        size_str = _format_size(it.get("size", 0))
+        click.echo(f"  {it['name']}")
+        click.echo(f"    批次: {it.get('batch_no', '?')}  版本: {it.get('version', '?')}  "
+                   f"大小: {size_str}  创建: {format_time(it.get('created_at', 0))}")
+
+
+@handoff.command("log")
+@click.option("--batch", "-b", "batch_no", default=None, help="按批次筛选")
+@click.option("--limit", "-n", type=int, default=20, help="最多显示数量")
+@click.pass_context
+def handoff_log(ctx, batch_no, limit):
+    """查看交接包导入记录（SQLite 持久化，跨进程可查）"""
+    db_path = ensure_db(ctx)
+    records = db.get_handoff_imports(db_path, batch_no=batch_no, limit=limit)
+    if not records:
+        click.echo("暂无导入记录")
+        return
+    click.echo(f"导入记录（共 {len(records)} 条）:")
+    click.echo("")
+    for r in records:
+        status_tag = {
+            "imported": "[OK]",
+            "failed": "[FAIL]",
+            "previewed": "[PREVIEW]",
+        }.get(r["status"], "[?]")
+        click.echo(f"  #{r['id']} {status_tag} {r['status']}  批次: {r['batch_no']}")
+        click.echo(f"    包版本: {r['package_version']}  包: {os.path.basename(r['package_path'])}")
+        click.echo(f"    时间: {format_time(r['imported_at'])}")
+        if r.get("operator"):
+            click.echo(f"    操作人: {r['operator']}")
+        if r.get("was_force"):
+            click.echo(f"    方式: 强制覆盖")
+        if r.get("evidence_dir_remapped"):
+            click.echo(f"    证据目录重映射: {r['evidence_dir_remapped']}")
+        src = r.get("source_summary", {})
+        if isinstance(src, dict) and src.get("work_dir"):
+            click.echo(f"    来源 work-dir: {src['work_dir']}")
+        rr = r.get("restore_result", {})
+        if isinstance(rr, dict):
+            if rr.get("error"):
+                click.echo(f"    错误: {rr['error']}")
+            if rr.get("imported_playbooks"):
+                click.echo(f"    导入剧本: {', '.join(rr['imported_playbooks'])}")
+            if rr.get("skipped_playbooks"):
+                click.echo(f"    跳过剧本: {', '.join(rr['skipped_playbooks'])}")
+        il = r.get("import_log", [])
+        if isinstance(il, list) and il:
+            click.echo(f"    导入步骤: {len(il)} 步")
+            for step in il:
+                if step.get("ok"):
+                    tag = "[OK]"
+                else:
+                    tag = "[X]"
+                click.echo(f"      {tag} {step.get('step', '')}")
+        click.echo("")
 
 
 if __name__ == "__main__":

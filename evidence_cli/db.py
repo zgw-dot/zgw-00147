@@ -154,6 +154,24 @@ def init_db(db_path: str) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_playbook_runs_batch ON playbook_runs(batch_no);
             CREATE INDEX IF NOT EXISTS idx_playbook_steps_run ON playbook_step_logs(run_id);
+
+            CREATE TABLE IF NOT EXISTS handoff_imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                package_path TEXT NOT NULL,
+                package_version TEXT NOT NULL,
+                batch_no TEXT NOT NULL,
+                source_summary TEXT NOT NULL,
+                import_log TEXT NOT NULL,
+                restore_result TEXT NOT NULL,
+                status TEXT NOT NULL,
+                operator TEXT,
+                imported_at REAL NOT NULL,
+                was_force INTEGER DEFAULT 0,
+                evidence_dir_remapped TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_handoff_batch ON handoff_imports(batch_no);
+            CREATE INDEX IF NOT EXISTS idx_handoff_status ON handoff_imports(status);
         """)
 
 
@@ -922,3 +940,76 @@ def delete_playbook_from_library(db_path: str, name: str) -> bool:
             (name,),
         )
         return cursor.rowcount > 0
+
+
+def insert_handoff_import(
+    db_path: str,
+    package_path: str,
+    package_version: str,
+    batch_no: str,
+    source_summary: Dict,
+    import_log: List[Dict],
+    restore_result: Dict,
+    status: str,
+    operator: Optional[str] = None,
+    was_force: bool = False,
+    evidence_dir_remapped: Optional[str] = None,
+) -> int:
+    import json as _json
+    now = time.time()
+    with get_conn(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO handoff_imports
+               (package_path, package_version, batch_no, source_summary, import_log,
+                restore_result, status, operator, imported_at, was_force, evidence_dir_remapped)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                package_path,
+                package_version,
+                batch_no,
+                _json.dumps(source_summary, ensure_ascii=False),
+                _json.dumps(import_log, ensure_ascii=False),
+                _json.dumps(restore_result, ensure_ascii=False),
+                status,
+                operator,
+                now,
+                1 if was_force else 0,
+                evidence_dir_remapped,
+            ),
+        )
+        return cursor.lastrowid
+
+
+def get_handoff_imports(
+    db_path: str, batch_no: Optional[str] = None, limit: int = 50
+) -> List[Dict]:
+    import json as _json
+    with get_conn(db_path) as conn:
+        if batch_no:
+            rows = conn.execute(
+                "SELECT * FROM handoff_imports WHERE batch_no = ? ORDER BY id DESC LIMIT ?",
+                (batch_no, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM handoff_imports ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["was_force"] = bool(d.get("was_force", 0))
+            try:
+                d["source_summary"] = _json.loads(d["source_summary"]) if d.get("source_summary") else {}
+            except (_json.JSONDecodeError, TypeError):
+                d["source_summary"] = {}
+            try:
+                d["import_log"] = _json.loads(d["import_log"]) if d.get("import_log") else []
+            except (_json.JSONDecodeError, TypeError):
+                d["import_log"] = []
+            try:
+                d["restore_result"] = _json.loads(d["restore_result"]) if d.get("restore_result") else {}
+            except (_json.JSONDecodeError, TypeError):
+                d["restore_result"] = {}
+            result.append(d)
+        return result
