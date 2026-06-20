@@ -54,6 +54,37 @@ def run_cli(args: List[str], cwd: str, check: bool = True) -> subprocess.Complet
     return result
 
 
+def run_python_script(script: str, cwd: str, check: bool = True) -> subprocess.CompletedProcess:
+    """直接运行 Python 脚本，返回结果"""
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    env = os.environ.copy()
+    pythonpath = env.get("PYTHONPATH", "")
+    if pythonpath:
+        pythonpath = project_root + os.pathsep + pythonpath
+    else:
+        pythonpath = project_root
+    env["PYTHONPATH"] = pythonpath
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONLEGACYWINDOWSSTDIO"] = "1"
+
+    cmd = [sys.executable, "-c", script]
+    result = subprocess.run(
+        cmd,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    if check and result.returncode != 0:
+        print(f"脚本失败: {' '.join(cmd)}")
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
+        raise RuntimeError(f"脚本失败，返回码: {result.returncode}")
+    return result
+
+
 class TestHandoffCLIChain(unittest.TestCase):
     """批次交接包 CLI 命令链集成测试"""
 
@@ -531,6 +562,153 @@ class TestHandoffCLIChain(unittest.TestCase):
         self.assertFalse(os.path.isfile(pkg_fail))
 
         print("\n[OK] 测试5通过")
+
+    def test_06_source_deletion_persistence(self):
+        """测试6: 源目录删除后来源记录仍可追溯（本次重构核心验证）"""
+        print("\n" + "=" * 60)
+        print("测试6: 源目录删除后来源记录持久化验证")
+        print("=" * 60)
+
+        work_src = os.path.join(self.base_dir, "work_src6")
+        work_dst = os.path.join(self.base_dir, "work_dst6")
+        os.makedirs(work_src)
+        os.makedirs(work_dst)
+
+        print("\n[步骤1] 源目录创建批次并打包")
+        run_cli(["init"], cwd=work_src)
+        fx = self._create_evidence_fixture(work_src)
+        run_cli([
+            "import",
+            "-b", "batch_persist",
+            "-m", fx["manifest_path"],
+            "-e", fx["evidence_dir"],
+            "-d", "持久化测试批次",
+        ], cwd=work_src)
+        run_cli(["precheck", "-b", "batch_persist"], cwd=work_src)
+        run_cli([
+            "review", "-b", "batch_persist", "-i", "1",
+            "-s", "signed", "-r", "源端复核记录", "-o", "src_op",
+        ], cwd=work_src)
+
+        pkg = os.path.join(self.base_dir, "handoff_persist.tar.gz")
+        run_cli([
+            "handoff", "create",
+            "-b", "batch_persist",
+            "-o", pkg,
+            "-u", "src_packer",
+        ], cwd=work_src)
+
+        print("\n[步骤2] 目标空目录先只读核查再正式导入")
+        run_cli(["init"], cwd=work_dst)
+        dry_result = run_cli([
+            "handoff", "import",
+            "-p", pkg,
+            "-e", fx["evidence_dir"],
+            "--dry-run",
+        ], cwd=work_dst)
+        self.assertIn("[OK] 核查通过，可以导入", dry_result.stdout)
+
+        import_result = run_cli([
+            "handoff", "import",
+            "-p", pkg,
+            "-e", fx["evidence_dir"],
+            "-u", "dst_importer",
+        ], cwd=work_dst)
+        self.assertIn("导入完成", import_result.stdout)
+
+        print("\n[步骤3] 验证导入后 manifest_path 指向目标端路径")
+        db_path = os.path.join(work_dst, "evidence_cli.db")
+        query_script = f"""
+import json, sys, os
+sys.path.insert(0, r'{os.path.dirname(os.path.abspath(__file__))}')
+from evidence_cli import db
+db.init_db(r'{db_path}')
+batch = db.get_batch_by_no(r'{db_path}', 'batch_persist')
+print(json.dumps({{"batch": {{
+    "batch_no": batch["batch_no"],
+    "manifest_path": batch["manifest_path"],
+    "evidence_dir": batch["evidence_dir"],
+    "restored_from": batch.get("restored_from", ""),
+    "restored_at": batch.get("restored_at"),
+}}}}, ensure_ascii=False))
+"""
+        query_result = run_python_script(query_script, cwd=work_dst)
+        batch_data = json.loads(query_result.stdout)
+        self.assertIn(work_dst, batch_data["batch"]["manifest_path"])
+        self.assertNotIn(work_src, batch_data["batch"]["manifest_path"])
+
+        print("\n[步骤4] 验证 restored_from 指向持久化 .snapshots 目录（非系统临时目录）")
+        restored_from = batch_data["batch"].get("restored_from", "")
+        self.assertIn(".snapshots", restored_from)
+        self.assertTrue(restored_from.startswith(work_dst), 
+            f"快照路径 {restored_from} 应在目标 work-dir 下 {work_dst}")
+        sys_temp = tempfile.gettempdir().lower()
+        snap_parent = os.path.dirname(restored_from).lower()
+        snap_grandparent = os.path.dirname(os.path.dirname(restored_from)).lower()
+        self.assertNotEqual(snap_parent, sys_temp,
+            f"快照不应直接保存在系统临时目录: {sys_temp}")
+        self.assertNotEqual(snap_grandparent, sys_temp,
+            f"快照父目录不应直接在系统临时目录: {sys_temp}")
+        self.assertTrue(os.path.isfile(restored_from))
+
+        print("\n[步骤5] 删除源目录和交接包文件")
+        shutil.rmtree(work_src, ignore_errors=True)
+        os.remove(pkg)
+        self.assertFalse(os.path.isdir(work_src))
+        self.assertFalse(os.path.isfile(pkg))
+
+        print("\n[步骤6] 重开 CLI 验证 resume 仍能正确显示来源信息")
+        resume_result = run_cli(["resume", "-b", "batch_persist"], cwd=work_dst)
+        self.assertIn("batch_persist", resume_result.stdout)
+        self.assertIn("已签收: 1", resume_result.stdout)
+        self.assertIn("源端复核记录", resume_result.stdout)
+        self.assertIn("来源快照", resume_result.stdout)
+        self.assertIn("交接包来源", resume_result.stdout)
+        self.assertIn("[MISSING](已删除)", resume_result.stdout)
+        self.assertIn("src_packer", resume_result.stdout)
+        self.assertIn("dst_importer", resume_result.stdout)
+        self.assertIn("来源 work-dir", resume_result.stdout)
+        self.assertIn(work_src, resume_result.stdout)
+
+        print("\n[步骤7] 验证 trace 恢复链路仍完整")
+        trace_result = run_cli(["trace", "-b", "batch_persist"], cwd=work_dst)
+        self.assertIn("恢复链路", trace_result.stdout)
+        self.assertIn("dst_importer", trace_result.stdout)
+        self.assertIn("交接包来源", trace_result.stdout)
+        self.assertIn("[MISSING](已删除)", trace_result.stdout)
+        self.assertIn("来源 work-dir", trace_result.stdout)
+
+        print("\n[步骤8] 验证 handoff log 来源记录完整")
+        log_result = run_cli(["handoff", "log"], cwd=work_dst)
+        self.assertIn("[OK] imported", log_result.stdout)
+        self.assertIn("batch_persist", log_result.stdout)
+        self.assertIn("dst_importer", log_result.stdout)
+        self.assertIn("来源 work-dir", log_result.stdout)
+
+        print("\n[步骤9] 跨进程复查（模拟重开 CLI）")
+        resume2 = run_cli(["resume", "-b", "batch_persist"], cwd=work_dst)
+        self.assertIn("交接包来源", resume2.stdout)
+
+        trace2 = run_cli(["trace", "-b", "batch_persist"], cwd=work_dst)
+        self.assertIn("交接包来源", trace2.stdout)
+        self.assertIn("来源 work-dir", trace2.stdout)
+
+        log2 = run_cli(["handoff", "log", "-b", "batch_persist"], cwd=work_dst)
+        self.assertIn("dst_importer", log2.stdout)
+
+        print("\n[步骤10] 验证 export 仍能正常工作")
+        export_path = os.path.join(self.base_dir, "export_after_delete.json")
+        run_cli([
+            "export", "-b", "batch_persist", "-o", export_path,
+        ], cwd=work_dst)
+        self.assertTrue(os.path.isfile(export_path))
+        with open(export_path, "r", encoding="utf-8") as f:
+            export_data = json.load(f)
+        self.assertIn("batch", export_data)
+        self.assertEqual(export_data["batch"]["batch_no"], "batch_persist")
+        self.assertIn(work_dst, export_data["batch"]["manifest_path"])
+
+        print("\n[OK] 测试6通过")
 
 
 if __name__ == "__main__":

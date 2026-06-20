@@ -32,6 +32,23 @@ def get_conn(db_path: str):
         conn.close()
 
 
+def _migrate_schema(db_path: str) -> None:
+    """迁移数据库 schema，为现有数据库添加缺失的列"""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute("PRAGMA table_info(restore_events)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "handoff_import_id" not in columns:
+            conn.execute("ALTER TABLE restore_events ADD COLUMN handoff_import_id INTEGER")
+            conn.execute(
+                "ALTER TABLE restore_events ADD FOREIGN KEY (handoff_import_id) REFERENCES handoff_imports(id)"
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
 def init_db(db_path: str) -> None:
     """初始化数据库表结构"""
     with get_conn(db_path) as conn:
@@ -101,7 +118,9 @@ def init_db(db_path: str) -> None:
                 old_batch_snapshot TEXT,
                 restore_diff TEXT,
                 operator TEXT,
-                FOREIGN KEY (batch_id) REFERENCES batches(id)
+                handoff_import_id INTEGER,
+                FOREIGN KEY (batch_id) REFERENCES batches(id),
+                FOREIGN KEY (handoff_import_id) REFERENCES handoff_imports(id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_items_batch ON evidence_items(batch_id);
@@ -173,6 +192,7 @@ def init_db(db_path: str) -> None:
             CREATE INDEX IF NOT EXISTS idx_handoff_batch ON handoff_imports(batch_no);
             CREATE INDEX IF NOT EXISTS idx_handoff_status ON handoff_imports(status);
         """)
+    _migrate_schema(db_path)
 
 
 def create_batch(
@@ -552,6 +572,7 @@ def _insert_restore_event_with_conn(
     old_batch_snapshot: Optional[str],
     restore_diff: Optional[str],
     operator: Optional[str],
+    handoff_import_id: Optional[int] = None,
 ) -> int:
     """
     在现有数据库连接中插入恢复事件（供事务内调用）。
@@ -563,8 +584,8 @@ def _insert_restore_event_with_conn(
             parent_restore_event_id, restored_at, was_force, was_remapped,
             evidence_dir_before, evidence_dir_after,
             manifest_path_before, manifest_path_after,
-            old_batch_snapshot, restore_diff, operator)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            old_batch_snapshot, restore_diff, operator, handoff_import_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             batch_id,
             batch_no,
@@ -581,6 +602,7 @@ def _insert_restore_event_with_conn(
             old_batch_snapshot,
             restore_diff,
             operator,
+            handoff_import_id,
         ),
     )
     event_id = cursor.lastrowid
@@ -608,6 +630,7 @@ def insert_restore_event(
     old_batch_snapshot: Optional[Dict] = None,
     restore_diff: Optional[Dict] = None,
     operator: Optional[str] = None,
+    handoff_import_id: Optional[int] = None,
 ) -> int:
     """
     独立事务插入一条恢复事件，返回事件 ID。
@@ -636,7 +659,69 @@ def insert_restore_event(
             old_batch_snapshot=old_json,
             restore_diff=diff_json,
             operator=operator,
+            handoff_import_id=handoff_import_id,
         )
+
+
+def get_handoff_import_by_id(db_path: str, import_id: int) -> Optional[Dict]:
+    """根据 ID 获取交接包导入记录"""
+    import json as _json
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM handoff_imports WHERE id = ?",
+            (import_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["was_force"] = bool(d.get("was_force", 0))
+        try:
+            d["source_summary"] = _json.loads(d["source_summary"]) if d.get("source_summary") else {}
+        except (_json.JSONDecodeError, TypeError):
+            d["source_summary"] = {}
+        try:
+            d["import_log"] = _json.loads(d["import_log"]) if d.get("import_log") else []
+        except (_json.JSONDecodeError, TypeError):
+            d["import_log"] = []
+        try:
+            d["restore_result"] = _json.loads(d["restore_result"]) if d.get("restore_result") else {}
+        except (_json.JSONDecodeError, TypeError):
+            d["restore_result"] = {}
+        return d
+
+
+def get_restore_event_with_handoff(db_path: str, event_id: int) -> Optional[Dict]:
+    """获取恢复事件及其关联的交接包导入记录"""
+    import json as _json
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """SELECT re.*, hi.*
+               FROM restore_events re
+               LEFT JOIN handoff_imports hi ON re.handoff_import_id = hi.id
+               WHERE re.id = ?""",
+            (event_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["was_force"] = bool(d.get("was_force", 0))
+        d["was_remapped"] = bool(d.get("was_remapped", 0))
+        try:
+            if d.get("source_summary"):
+                d["source_summary"] = _json.loads(d["source_summary"])
+        except (_json.JSONDecodeError, TypeError):
+            pass
+        try:
+            if d.get("restore_diff"):
+                d["restore_diff"] = _json.loads(d["restore_diff"])
+        except (_json.JSONDecodeError, TypeError):
+            pass
+        try:
+            if d.get("old_batch_snapshot"):
+                d["old_batch_snapshot"] = _json.loads(d["old_batch_snapshot"])
+        except (_json.JSONDecodeError, TypeError):
+            pass
+        return d
 
 
 def get_restore_events_for_batch(
@@ -1013,3 +1098,39 @@ def get_handoff_imports(
                 d["restore_result"] = {}
             result.append(d)
         return result
+
+
+def update_handoff_import(
+    db_path: str,
+    import_id: int,
+    **kwargs,
+) -> None:
+    """更新交接包导入记录的指定字段"""
+    import json as _json
+    allowed_fields = [
+        "package_path", "package_version", "batch_no", "source_summary",
+        "import_log", "restore_result", "status", "operator",
+        "was_force", "evidence_dir_remapped"
+    ]
+
+    updates = []
+    params = []
+    for key, value in kwargs.items():
+        if key not in allowed_fields:
+            continue
+        if key in ("source_summary", "import_log", "restore_result") and isinstance(value, (dict, list)):
+            value = _json.dumps(value, ensure_ascii=False)
+        if key == "was_force" and isinstance(value, bool):
+            value = 1 if value else 0
+        updates.append(f"{key} = ?")
+        params.append(value)
+
+    if not updates:
+        return
+
+    params.append(import_id)
+    with get_conn(db_path) as conn:
+        conn.execute(
+            f"UPDATE handoff_imports SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )

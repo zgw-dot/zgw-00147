@@ -139,6 +139,7 @@ def restore_snapshot(
     force: bool = False,
     evidence_dir: Optional[str] = None,
     operator: Optional[str] = None,
+    handoff_import_id: Optional[int] = None,
 ) -> Tuple[str, int, Dict]:
     """
     从快照恢复批次到数据库。
@@ -149,6 +150,7 @@ def restore_snapshot(
         force: 是否强制覆盖已存在的同名批次
         evidence_dir: 重映射证据目录路径（None 则使用快照中的路径）
         operator: 操作人（可选，写入恢复事件）
+        handoff_import_id: 关联的交接包导入记录 ID（可选，用于恢复链路回退）
 
     返回：(批次号, 证据项数量, 恢复摘要字典)
 
@@ -202,6 +204,7 @@ def restore_snapshot(
         evidence_dir_before=evidence_dir_before,
         manifest_path_before=manifest_path_before,
         operator=operator,
+        handoff_import_id=handoff_import_id,
     )
 
     summary = {
@@ -239,6 +242,7 @@ def _restore_batch_with_logs(
     evidence_dir_before: Optional[str] = None,
     manifest_path_before: Optional[str] = None,
     operator: Optional[str] = None,
+    handoff_import_id: Optional[int] = None,
 ) -> int:
     """
     原子恢复批次及其证据项、复核历史、恢复事件链路。
@@ -434,6 +438,7 @@ def _restore_batch_with_logs(
                 old_batch_snapshot=old_batch_snapshot_json,
                 restore_diff=restore_diff_json,
                 operator=operator,
+                handoff_import_id=handoff_import_id,
             )
 
         conn.commit()
@@ -773,14 +778,44 @@ def build_recovery_summary(db_path: str, batch_no: str) -> Optional[Dict]:
 
         snapshot_path = last_evt["snapshot_path"]
         snapshot_exists = os.path.isfile(snapshot_path)
+        handoff_import_id = last_evt.get("handoff_import_id")
+        handoff_import = None
+        if handoff_import_id:
+            handoff_import = db_mod.get_handoff_import_by_id(db_path, handoff_import_id)
+
         if not snapshot_exists:
-            warnings.append("来源快照文件已不存在，无法再次从此源恢复")
+            if handoff_import:
+                warnings.append("临时快照文件已清理，但交接包来源记录已持久化保存")
+            else:
+                warnings.append("来源快照文件已不存在，无法再次从此源恢复")
 
         source_snapshot = {
             "path": snapshot_path,
             "exists": snapshot_exists,
             "created_at": last_evt.get("snapshot_created_at"),
         }
+
+        if handoff_import:
+            package_path = handoff_import.get("package_path", "")
+            package_exists = os.path.isfile(package_path)
+            source_snapshot["handoff_package"] = {
+                "path": package_path,
+                "exists": package_exists,
+                "package_version": handoff_import.get("package_version"),
+                "imported_at": handoff_import.get("imported_at"),
+                "operator": handoff_import.get("operator"),
+            }
+            source_summary = handoff_import.get("source_summary", {})
+            if isinstance(source_summary, dict):
+                source_snapshot["source_summary"] = source_summary
+            restore_result = handoff_import.get("restore_result", {})
+            if isinstance(restore_result, dict):
+                if "manifest_path" in restore_result:
+                    source_snapshot["manifest_path"] = restore_result["manifest_path"]
+                if "evidence_dir" in restore_result:
+                    source_snapshot["evidence_dir"] = restore_result["evidence_dir"]
+                if "evidence_remapped" in restore_result:
+                    source_snapshot["evidence_remapped"] = restore_result["evidence_remapped"]
 
         if last_evt.get("restore_diff"):
             try:
@@ -1071,8 +1106,16 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
         ev_warnings: List[str] = []
 
         snapshot_exists = os.path.isfile(e["snapshot_path"])
+        handoff_import_id = e.get("handoff_import_id")
+        handoff_import = None
+        if handoff_import_id:
+            handoff_import = db_mod.get_handoff_import_by_id(db_path, handoff_import_id)
+
         if not snapshot_exists:
-            ev_warnings.append("快照源文件已不存在")
+            if handoff_import:
+                ev_warnings.append("临时快照已清理，但交接包来源记录已持久化保存")
+            else:
+                ev_warnings.append("快照源文件已不存在")
 
         chain_ok = True
         if e.get("parent_restore_event_id") is not None:
@@ -1097,7 +1140,7 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
             except (json.JSONDecodeError, TypeError):
                 ev_warnings.append("恢复差异数据损坏，无法解析")
 
-        events.append({
+        event_data = {
             "event_id": e["id"],
             "restored_at": e["restored_at"],
             "snapshot_path": e["snapshot_path"],
@@ -1115,7 +1158,24 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
             "operator": e.get("operator"),
             "chain_ok": chain_ok,
             "warnings": ev_warnings,
-        })
+        }
+
+        if handoff_import:
+            package_path = handoff_import.get("package_path", "")
+            event_data["handoff_import"] = {
+                "import_id": handoff_import["id"],
+                "package_path": package_path,
+                "package_exists": os.path.isfile(package_path),
+                "package_version": handoff_import.get("package_version"),
+                "imported_at": handoff_import.get("imported_at"),
+                "operator": handoff_import.get("operator"),
+                "was_force": handoff_import.get("was_force", False),
+                "source_summary": handoff_import.get("source_summary", {}),
+                "restore_result": handoff_import.get("restore_result", {}),
+                "status": handoff_import.get("status"),
+            }
+
+        events.append(event_data)
 
         last_restored_at = e["restored_at"]
 
@@ -1136,10 +1196,17 @@ def build_trace(db_path: str, batch_no: str) -> Optional[Dict]:
         if not all(ev["chain_ok"] for ev in events):
             warnings.append("恢复链路存在断档，部分历史可能不可追溯")
         missing_count = sum(1 for ev in events if not ev["snapshot_exists"])
+        has_handoff_backup = sum(1 for ev in events if ev.get("handoff_import"))
         if missing_count > 0:
-            warnings.append(
-                f"有 {missing_count} / {len(events)} 个快照源文件已丢失，无法再次从源恢复"
-            )
+            if has_handoff_backup == missing_count:
+                warnings.append(
+                    f"有 {missing_count} / {len(events)} 个临时快照已清理，"
+                    f"但对应交接包来源记录已持久化保存（可通过 handoff log 查看）"
+                )
+            else:
+                warnings.append(
+                    f"有 {missing_count} / {len(events)} 个快照源文件已丢失，无法再次从源恢复"
+                )
 
     if not has_chain and batch.get("restored_from"):
         warnings.append(

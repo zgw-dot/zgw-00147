@@ -641,9 +641,11 @@ def import_handoff(
     """
     正式导入交接包：
       1. 复制 manifest 到 work-dir
-      2. 调用 snapshot_mod 恢复批次到数据库
-      3. 导入剧本库（若有同名则跳过）
-      4. 记录 handoff_imports
+      2. 保存持久化快照到 .snapshots 目录
+      3. 先插入 handoff_imports 记录获取 ID
+      4. 调用 snapshot_mod 恢复批次到数据库（关联 handoff_import_id）
+      5. 导入剧本库（若有同名则跳过）
+      6. 更新 handoff_imports 记录完整结果
 
     返回恢复结果字典。
     """
@@ -696,27 +698,46 @@ def import_handoff(
         "ts": time.time(), "ok": True,
     })
 
-    tmp_snap_path = os.path.join(
-        tempfile.gettempdir(),
-        f"_handoff_snap_restore_{os.getpid()}_{int(time.time()*1000)}.json"
+    snapshot_dir = snapshot_mod.get_snapshot_dir(work_dir)
+    os.makedirs(snapshot_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    persistent_snap_path = os.path.join(
+        snapshot_dir,
+        f"handoff_{batch_no}_{timestamp}.json"
     )
-    try:
-        with open(tmp_snap_path, "w", encoding="utf-8") as f:
-            json.dump(snapshot, f, ensure_ascii=False, indent=2)
 
-        restored_batch_no, item_count, restore_summary = snapshot_mod.restore_snapshot(
-            db_path=db_path,
-            snapshot_path=tmp_snap_path,
-            force=force,
-            evidence_dir=preview["evidence_dir"],
-            operator=operator,
-        )
-    finally:
-        if os.path.isfile(tmp_snap_path):
-            try:
-                os.remove(tmp_snap_path)
-            except OSError:
-                pass
+    snapshot["batch"]["manifest_path"] = target_manifest_path
+    snapshot["batch"]["evidence_dir"] = preview["evidence_dir"]
+
+    with open(persistent_snap_path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False, indent=2)
+    import_log.append({
+        "step": f"持久化快照已保存: {persistent_snap_path}",
+        "ts": time.time(), "ok": True,
+    })
+
+    handoff_import_id = db.insert_handoff_import(
+        db_path=db_path,
+        package_path=preview["package_path"],
+        package_version=package_manifest.get("version", HANDOFF_VERSION),
+        batch_no=batch_no,
+        source_summary=package_manifest.get("source", {}),
+        import_log=import_log,
+        restore_result={},
+        status="importing",
+        operator=operator,
+        was_force=force,
+        evidence_dir_remapped=evidence_dir if preview["evidence_remapped"] else None,
+    )
+
+    restored_batch_no, item_count, restore_summary = snapshot_mod.restore_snapshot(
+        db_path=db_path,
+        snapshot_path=persistent_snap_path,
+        force=force,
+        evidence_dir=preview["evidence_dir"],
+        operator=operator,
+        handoff_import_id=handoff_import_id,
+    )
 
     import_log.append({
         "step": f"批次已恢复到数据库: {restored_batch_no} ({item_count} 项)",
@@ -768,18 +789,12 @@ def import_handoff(
         "conflicts": preview["conflicts"],
     }
 
-    db.insert_handoff_import(
+    db.update_handoff_import(
         db_path=db_path,
-        package_path=preview["package_path"],
-        package_version=package_manifest.get("version", HANDOFF_VERSION),
-        batch_no=batch_no,
-        source_summary=package_manifest.get("source", {}),
+        import_id=handoff_import_id,
         import_log=import_log,
         restore_result=restore_result,
         status="imported",
-        operator=operator,
-        was_force=force,
-        evidence_dir_remapped=evidence_dir if preview["evidence_remapped"] else None,
     )
 
     import_log.append({"step": "导入完成，记录已写入 SQLite", "ts": time.time(), "ok": True})

@@ -328,6 +328,16 @@ def _show_restore_info(batch: Dict, db_path: Optional[str] = None) -> None:
             if src:
                 snap_marker = "[OK]" if src.get("exists") else "[MISSING](已丢失)"
                 click.echo(f"来源快照: {snap_marker} {src.get('path', '')}")
+                handoff_pkg = src.get("handoff_package")
+                if handoff_pkg:
+                    pkg_marker = "[OK]" if handoff_pkg.get("exists") else "[MISSING](已删除)"
+                    click.echo(f"交接包来源: {pkg_marker} {handoff_pkg.get('path', '')}")
+                    click.echo(f"  打包人: {handoff_pkg.get('operator', '未知')}")
+                    source_summary = src.get("source_summary", {})
+                    if isinstance(source_summary, dict) and source_summary.get("work_dir"):
+                        click.echo(f"  来源 work-dir: {source_summary['work_dir']}")
+                    if isinstance(source_summary, dict) and source_summary.get("operator"):
+                        click.echo(f"  打包操作人: {source_summary['operator']}")
             evt = recovery_summary.get("restore_event")
             if evt and evt.get("restored_at"):
                 click.echo(f"恢复时间: {format_time(evt['restored_at'])}")
@@ -630,6 +640,23 @@ def _format_trace_output(trace_data: Dict) -> None:
             click.echo(f"    快照创建: {format_time(ev['snapshot_created_at'])}")
         if ev.get("operator"):
             click.echo(f"    操作人: {ev['operator']}")
+
+        handoff_import = ev.get("handoff_import")
+        if handoff_import:
+            pkg_path = handoff_import.get("path", "")
+            pkg_marker = "[OK]" if handoff_import.get("exists") else "[MISSING](已删除)"
+            click.echo(f"    交接包来源: {pkg_marker} {pkg_path}")
+            if handoff_import.get("operator"):
+                click.echo(f"    交接包操作人: {handoff_import['operator']}")
+            source_summary = handoff_import.get("source_summary", {})
+            if isinstance(source_summary, dict):
+                if source_summary.get("work_dir"):
+                    click.echo(f"    来源 work-dir: {source_summary['work_dir']}")
+                if source_summary.get("operator"):
+                    click.echo(f"    来源打包人: {source_summary['operator']}")
+            restore_result = handoff_import.get("restore_result", {})
+            if isinstance(restore_result, dict) and restore_result.get("manifest_path"):
+                click.echo(f"    目标端清单: {restore_result['manifest_path']}")
 
         if ev.get("parent_event_id"):
             if ev["chain_ok"]:
